@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+pytest
+httpx
+pydantic
+pytz
+google-cloud-aiplatform
+python-dotenv
+redis
+mcp
+google-adk
+nest-asyncio
+google-genai
