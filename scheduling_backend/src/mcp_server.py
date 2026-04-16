@@ -6,14 +6,70 @@ so repeated lookups never hit the DB or LLM tool-call loop again.
 
 from mcp.server.fastmcp import FastMCP
 from .dependencies import get_repo, get_session_mgr
+from .session_manager import SessionManager
 from .models import User, Event, EventTime, AttendeeEntry, EmailAddress, OnlineMeeting
 import uuid
 from datetime import datetime, timedelta
+import re
+from contextvars import ContextVar
 
 mcp = FastMCP("Scheduling Assistant")
+CURRENT_SESSION_ID: ContextVar[str] = ContextVar("current_session_id", default="")
+
+
+def set_current_session_id(session_id: str):
+    return CURRENT_SESSION_ID.set(session_id)
+
+
+def reset_current_session_id(token):
+    CURRENT_SESSION_ID.reset(token)
+
+
+def _set_live_status(message: str):
+    session_id = CURRENT_SESSION_ID.get()
+    if session_id:
+        get_session_mgr().set_status(session_id, message)
 
 def _get_organiser():
     return get_repo().get_organiser()
+
+def _coerce_attendees(attendees) -> list[dict]:
+    """Best-effort coercion to a list of {id, type} objects.
+
+    ADK/tool calls sometimes send attendees as strings (e.g. "Alice - EID: 101")
+    instead of structured dicts. This prevents crashes and lets the tool proceed.
+    """
+    if attendees is None:
+        return []
+    if not isinstance(attendees, list):
+        attendees = [attendees]
+
+    coerced: list[dict] = []
+    for a in attendees:
+        if isinstance(a, dict):
+            # Normalize id field if model uses alternate keys
+            attendee_id = a.get("id") or a.get("eid") or a.get("userId") or a.get("user_id")
+            if attendee_id is None:
+                continue
+            coerced.append({
+                **a,
+                "id": str(attendee_id),
+                "type": a.get("type", "optional"),
+            })
+            continue
+
+        if isinstance(a, str):
+            s = a.strip()
+            # Try to extract an EID-like numeric id.
+            m = re.search(r"\bEID\b\s*[:#-]?\s*(\d+)\b", s, flags=re.IGNORECASE)
+            if not m:
+                m = re.search(r"\b(\d{2,})\b", s)  # fallback: any 2+ digit token
+            if not m:
+                continue
+            coerced.append({"id": m.group(1), "type": "optional"})
+            continue
+
+    return coerced
 
 
 # ---------------------------------------------------------------------------
@@ -26,6 +82,7 @@ def search_users(query: str) -> list[dict]:
     Returns id, name, email (EID), timezone, jobTitle, department.
     Results are cached in Redis for 1 hour.
     """
+    _set_live_status("Searching users...")
     cached = get_session_mgr().get_cached_search(query)
     if cached is not None:
         print(f"[CACHE HIT] search_users({query!r})", flush=True)
@@ -58,6 +115,7 @@ def get_users_by_team(team_name: str) -> list[dict]:
     Use when user says 'the engineering team' or 'all accountants'.
     Results are cached in Redis for 1 hour.
     """
+    _set_live_status("Getting team members...")
     cache_key = f"team:{team_name}"
     cached = get_session_mgr().get_cached_search(cache_key)
     if cached is not None:
@@ -89,6 +147,7 @@ def get_users_by_team(team_name: str) -> list[dict]:
 @mcp.tool()
 def get_user_schedule(user_id: str, date: str) -> list[dict]:
     """Get all calendar events for a user on a given date (YYYY-MM-DD UTC)."""
+    _set_live_status("Reading user schedule...")
     events = get_repo().get_events_on_date(user_id, date)
     return [
         {
@@ -110,6 +169,7 @@ def get_mutual_free_slots(user_ids: list[str], date: str, duration_mins: int = 6
     """Find up to 3 mutual free time slots for all given users on a date (UTC).
     Always includes organiser in the check.
     """
+    _set_live_status("Finding mutual free slots...")
     all_ids = list(set(user_ids + [_get_organiser().id]))
     return get_repo().get_free_slots(all_ids, date, duration_mins)
 
@@ -122,6 +182,7 @@ def check_conflict_detail(user_id: str, start: str, end: str, buffer_mins: int =
     """Check if a user has a conflict with the proposed slot.
     Returns conflict type: 'none' | 'full_overlap' | 'partial_overlap' | 'buffer'.
     """
+    _set_live_status("Checking conflicts...")
     events = get_repo().get_events_for_user(user_id)
     def _parse(iso_s: str):
         # Ensure aware UTC
@@ -177,10 +238,12 @@ def create_meeting(
     recurrence: 'none' | 'daily' | 'weekly' | 'biweekly' | 'monthly'
     presenter: name of person presenting/leading (empty = organiser)
     """
+    _set_live_status("Creating meeting...")
     event_id = f"e_{uuid.uuid4().hex[:8]}"
     join_url = get_repo().make_join_url(event_id)
 
     attendee_entries = []
+    attendees = _coerce_attendees(attendees)
     for a in attendees:
         user = get_repo().get_user_by_id(a["id"])
         if user:
@@ -189,6 +252,29 @@ def create_meeting(
                 type=a.get("type", "optional"),
                 userId=user.id,
             ))
+
+    # Safety net: validate conflicts at booking time so meetings are never
+    # created on overlapping slots even if the model skipped conflict tools.
+    requested_ids = list({ae.userId for ae in attendee_entries if ae.userId})
+    requested_ids.append(_get_organiser().id)
+    conflict_details = []
+    for uid in sorted(set(requested_ids)):
+        detail = check_conflict_detail(uid, start, end)
+        if detail.get("conflict"):
+            user = get_repo().get_user_by_id(uid)
+            conflict_details.append({
+                "user_id": uid,
+                "user_name": user.displayName if user else uid,
+                **detail,
+            })
+    if conflict_details:
+        return {
+            "status": "conflict",
+            "message": "Cannot create meeting because one or more attendees are busy.",
+            "requested_start": start,
+            "requested_end": end,
+            "conflicts": conflict_details,
+        }
 
     event = Event(**{
         "id": event_id,
@@ -248,9 +334,9 @@ def create_meeting(
         "end": end,
         "location": location,
         "recurrence": recurrence,
-        "presenter": presenter or ORGANISER.displayName,
+        "presenter": presenter or _get_organiser().displayName,
         "join_url": join_url,
-        "organizer": ORGANISER.displayName,
+        "organizer": _get_organiser().displayName,
         "attendees": [a.emailAddress.name for a in attendee_entries],
     }
 
@@ -276,6 +362,7 @@ def update_meeting(
     new_attendees is MERGED with existing attendees (pass removals explicitly with type='remove').
     Also refreshes the Redis fingerprint so duplicate detection stays accurate.
     """
+    _set_live_status("Updating meeting...")
     # 1. Time update
     if new_start and new_end:
         get_repo().update_event(event_id, new_start, new_end)
@@ -297,6 +384,7 @@ def update_meeting(
     # 3. Merge attendees — resolve new ones, keep existing names
     existing_names: list[str] = old_data.get("attendees", [])
     new_entries: list[AttendeeEntry] = []
+    new_attendees = _coerce_attendees(new_attendees)
     if new_attendees:
         for a in new_attendees:
             if a.get("type") == "remove":
@@ -390,6 +478,7 @@ def reschedule_meeting(event_id: str, new_start: str, new_end: str) -> dict:
     """Reschedule an existing meeting to a new slot. Notifies all attendees.
     For a full update (attendees, agenda, etc.) use update_meeting instead.
     """
+    _set_live_status("Rescheduling meeting...")
     updated = get_repo().update_event(event_id, new_start, new_end)
     if not updated:
         return {"status": "error", "message": f"Event {event_id} not found."}
@@ -415,6 +504,7 @@ def reschedule_meeting(event_id: str, new_start: str, new_end: str) -> dict:
 @mcp.tool()
 def notify_user(user_id: str, subject: str, body: str) -> dict:
     """Send a notification to a user."""
+    _set_live_status("Sending notifications...")
     return get_repo().send_notification(user_id, subject, body)
 
 

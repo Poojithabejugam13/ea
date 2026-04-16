@@ -10,8 +10,15 @@ export class ApiService {
   private baseUrl = 'http://127.0.0.1:8000';
 
   // Agent Process
-  processMessage(prompt: string): Observable<any> {
-    return this.http.post(`${this.baseUrl}/agent/process`, { prompt });
+  processMessage(prompt: string, sessionId: string): Observable<any> {
+    return this.http.post(`${this.baseUrl}/agent/process`, {
+      prompt,
+      session_id: sessionId,
+    });
+  }
+
+  getAgentStatus(sessionId: string): Observable<{ message: string }> {
+    return this.http.get<{ message: string }>(`${this.baseUrl}/agent/status?session_id=${sessionId}`);
   }
 
   // Search

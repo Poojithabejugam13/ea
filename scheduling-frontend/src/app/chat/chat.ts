@@ -2,6 +2,7 @@ import { Component, ChangeDetectorRef, ViewChild, ElementRef, inject } from '@an
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../api';
+import { interval, Subscription } from 'rxjs';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -121,7 +122,7 @@ interface Message {
               </svg>
             </div>
             <div class="thinking-text">
-              AI is thinking
+              {{ loadingMessage }}
               <span class="dots">
                 <span>.</span><span>.</span><span>.</span>
               </span>
@@ -256,11 +257,15 @@ export class ChatComponent {
   cdr = inject(ChangeDetectorRef);
   
   @ViewChild('scrollContainer') scrollContainer!: ElementRef;
+  private readonly sessionStorageKey = 'ai-butler-session-id';
+  private sessionId = this.getOrCreateSessionId();
 
   prompt = '';
   loading = false;
+  loadingMessage = 'AI is thinking';
   editingIndex: number | null = null;
   editPrompt = '';
+  private statusPollSub?: Subscription;
   
   messages: Message[] = [
     { 
@@ -314,11 +319,15 @@ export class ChatComponent {
 
   processQuery(q: string) {
     this.loading = true;
+    this.loadingMessage = 'AI is understanding your request';
+    this.startStatusPolling();
     this.scrollToBottom();
 
-    this.api.processMessage(q).subscribe({
+    this.api.processMessage(q, this.sessionId).subscribe({
       next: (res) => {
         this.loading = false;
+        this.stopStatusPolling();
+        this.loadingMessage = 'AI is thinking';
         
         // Extract teams links
         const linkRegex = /https:\/\/teams\.\S+/g;
@@ -351,6 +360,8 @@ export class ChatComponent {
       },
       error: (err) => {
         this.loading = false;
+        this.stopStatusPolling();
+        this.loadingMessage = 'AI is thinking';
         this.messages.push({ role: 'assistant', content: '❌ Error contacting AI: ' + err.message });
         this.scrollToBottom();
       }
@@ -402,5 +413,48 @@ export class ChatComponent {
 
   clearChat() {
     this.messages = [];
+  }
+
+  private getOrCreateSessionId(): string {
+    const fallback = this.generateSessionId();
+
+    try {
+      const existing = window.localStorage.getItem(this.sessionStorageKey);
+      if (existing) {
+        return existing;
+      }
+
+      window.localStorage.setItem(this.sessionStorageKey, fallback);
+      return fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  private generateSessionId(): string {
+    if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+      return crypto.randomUUID();
+    }
+
+    return `session-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  private startStatusPolling() {
+    this.stopStatusPolling();
+    this.statusPollSub = interval(600).subscribe(() => {
+      this.api.getAgentStatus(this.sessionId).subscribe({
+        next: (res) => {
+          if (res?.message) {
+            this.loadingMessage = res.message;
+            this.cdr.markForCheck();
+          }
+        }
+      });
+    });
+  }
+
+  private stopStatusPolling() {
+    this.statusPollSub?.unsubscribe();
+    this.statusPollSub = undefined;
   }
 }
