@@ -31,8 +31,7 @@ class SessionManager:
                 password=os.getenv("REDIS_PASSWORD", redis_password),
                 socket_connect_timeout=5,
                 socket_timeout=5,
-                ssl=True,
-                ssl_cert_reqs=None,
+                decode_responses=False,
             )
             self.redis_client.ping()
             self.use_redis = True

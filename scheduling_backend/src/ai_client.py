@@ -5,7 +5,7 @@ from google.genai import types
 from dotenv import load_dotenv
 from datetime import datetime
 from google.adk import Agent, Runner
-from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from .redis_session_service import RedisADKSessionService
 
 # Apply nest_asyncio at the module level to allow sync-to-async bridging in FastAPI/Uvicorn
 nest_asyncio.apply()
@@ -23,7 +23,7 @@ load_dotenv()
 
 PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 LOCATION = os.getenv("GCP_LOCATION", "us-central1")
-DEFAULT_VERTEX_MODEL = os.getenv("VERTEX_MODEL", "gemini-2.5-flash")
+MODEL_NAME = os.getenv("VERTEX_MODEL", "gemini-2.5-pro")
 
 def get_system_instruction():
     """Dynamic instruction to inject today's date and weekday."""
@@ -83,14 +83,22 @@ If you receive a message labeled "STRUCTURED FORM SUBMISSION":
 6. NO QUESTIONS: Do not ask for any details already present in the form.
 7. End with: "Ready to book." only when title + agenda + valid time are confirmed.
 
+╔══════════════════════════════════════════════════════════════╗
+║             ARCHITECTURE & PERSISTENCE RULES                 ║
+╚══════════════════════════════════════════════════════════════╝
+1. You ARE integrated with a local Redis server for persistent session storage.
+2. You have permanent memory of this conversation across server restarts.
+3. If asked how you remember details, accurately mention your Redis-backed session service.
+
 === STYLE ===
 Responses must be short and clean. Use numbered lists. Never repeat a question.
 Never ask what was already given or verified in the form.
 """
 
 class GeminiAgent:
-    def __init__(self, repository):
+    def __init__(self, repository, session_manager):
         self.repo = repository
+        self.session_mgr = session_manager
         
         # Ensure ADK uses Vertex AI by removing the placeholder API key
         api_key = os.getenv("GEMINI_API_KEY")
@@ -106,7 +114,7 @@ class GeminiAgent:
         self.agent = Agent(
             name="scheduling_assistant",
             description="AI assistant for booking and managing meetings on behalf of a manager.",
-            model=DEFAULT_VERTEX_MODEL,
+            model=MODEL_NAME,
             instruction=get_system_instruction(),
             tools=[
                 search_users, 
@@ -121,7 +129,7 @@ class GeminiAgent:
             ]
         )
         
-        self.session_service = InMemorySessionService()
+        self.session_service = RedisADKSessionService(self.session_mgr)
         self.runner = Runner(
             app_name="scheduling_app",
             agent=self.agent,
