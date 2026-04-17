@@ -130,7 +130,9 @@ Location/Link: ${formData.location || 'Not specified'}
 Presenter: ${formData.presenter || 'Organizer'}
 EID Verification: All IDs provided are pre-verified. Trust them explicitly.
 
-THIS IS A FINAL BOOKING COMMAND. USE THE PROVIDED EIDs DIRECTLY. DO NOT SEARCH. DO NOT ASK QUESTIONS. PROVIDE 3 TITLE OPTIONS AND THE AGENDA IMMEDIATELY.`;
+THIS IS A FINAL BOOKING COMMAND. USE THE PROVIDED EIDs DIRECTLY. DO NOT SEARCH.
+If conflict exists, ask only for a new time. 
+If no conflict, provide 3 title options first. Ask agenda only after title selection.`;
 
     // Wait for chat component to be ready in the next tick
     setTimeout(() => {

@@ -113,19 +113,77 @@ MOCK_EVENTS: Dict[str, List[Event]] = {
             onlineMeeting=OnlineMeeting(joinUrl="https://teams.mock/meet/e4"),
         ),
     ],
-    "101": [
-        Event(
-            id="e_partial",
-            subject="Deep Work Block",
-            bodyPreview="No interruptions",
-            start=EventTime(dateTime="2026-04-11T19:00:00Z", timeZone="UTC"), # 7:00 PM
-            end=EventTime(dateTime="2026-04-11T20:00:00Z", timeZone="UTC"),   # 8:00 PM
-            location="Virtual",
-            attendees=[],
-            organizer=EmailAddress(address="rithwika.singh@test.com", name="Rithwika Singh"),
-            onlineMeeting=OnlineMeeting(joinUrl="https://teams.mock/meet/ep"),
-        ),
-    ]
+
+
+"101":[
+    Event(
+        id="f101_1",
+        subject="Client Discussion",
+        start=EventTime(dateTime="2026-04-17T10:00:00Z", timeZone="UTC"),
+        end=EventTime(dateTime="2026-04-17T11:00:00Z", timeZone="UTC"),
+        location="Virtual",
+        attendees=[],
+        organizer=EmailAddress(address="rithwika.singh@test.com", name="Rithwika Singh"),
+    ),
+    Event(
+        id="f101_2",
+        subject="Design Review",
+        # 2:00 PM to 3:00 PM Asia/Kolkata == 08:30 to 09:30 UTC
+        start=EventTime(dateTime="2026-04-18T08:30:00Z", timeZone="UTC"),
+        end=EventTime(dateTime="2026-04-18T09:30:00Z", timeZone="UTC"),
+        location="Conference Room A",
+        attendees=[],
+        organizer=EmailAddress(address="rithwika.singh@test.com", name="Rithwika Singh"),
+    ),
+    Event(
+        id="f101_3",
+        subject="Code Review",
+        start=EventTime(dateTime="2026-04-19T11:00:00Z", timeZone="UTC"),
+        end=EventTime(dateTime="2026-04-19T12:00:00Z", timeZone="UTC"),
+        location="Virtual",
+        attendees=[],
+        organizer=EmailAddress(address="rithwika.singh@test.com", name="Rithwika Singh"),
+    ),
+],
+
+
+# -------------------------
+# USER 105 (Anand Kumar)
+# -------------------------
+"105": [
+    Event(
+        id="f105_1",
+        subject="Sales Sync",
+        start=EventTime(dateTime="2026-04-17T10:30:00Z", timeZone="UTC"),  # 🔥 Partial overlap
+        end=EventTime(dateTime="2026-04-17T11:30:00Z", timeZone="UTC"),
+        location="Virtual",
+        attendees=[],
+        organizer=EmailAddress(address="anand.kumar@test.com", name="Anand Kumar"),
+    ),
+    Event(
+        id="f105_2",
+        subject="Client Follow-up",
+        # 2:00 PM to 3:00 PM Asia/Kolkata == 08:30 to 09:30 UTC
+        start=EventTime(dateTime="2026-04-18T08:30:00Z", timeZone="UTC"),  # Exact clash at 2 PM IST
+        end=EventTime(dateTime="2026-04-18T09:30:00Z", timeZone="UTC"),
+        location="Virtual",
+        attendees=[],
+        organizer=EmailAddress(address="anand.kumar@test.com", name="Anand Kumar"),
+    ),
+    Event(
+        id="f105_3",
+        subject="Internal Meeting",
+        start=EventTime(dateTime="2026-04-20T11:00:00Z", timeZone="UTC"),  # Only 105 busy
+        end=EventTime(dateTime="2026-04-20T12:00:00Z", timeZone="UTC"),
+        location="Conference Room B",
+        attendees=[],
+        organizer=EmailAddress(address="anand.kumar@test.com", name="Anand Kumar"),
+    ),
+]
+
+
+
+
 }
 
 # Graph API Style Rooms

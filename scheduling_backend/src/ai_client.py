@@ -14,8 +14,10 @@ nest_asyncio.apply()
 from .mcp_server import (
     search_users, get_users_by_team, get_user_schedule,
     get_mutual_free_slots, check_conflict_detail,
-    create_meeting, update_meeting, reschedule_meeting, notify_user
+    create_meeting, update_meeting, reschedule_meeting, notify_user,
+    set_current_session_id, reset_current_session_id
 )
+from .dependencies import get_session_mgr
 
 load_dotenv()
 
@@ -45,6 +47,8 @@ Today is {weekday}, {date_str}.
 4. IF A TITLE HINT / TOPIC IS GIVEN (e.g. "study plan", "sprint review"): suggest titles immediately. NEVER ask for the title.
 5. ACCUMULATE context across ALL turns. Never forget previous messages.
 6. NEVER re-ask for anything the user has mentioned — in any form, in any turn.
+7. BEFORE calling create_meeting or reschedule_meeting, ALWAYS validate every attendee (and organiser) with check_conflict_detail for the exact start/end.
+8. NEVER claim attendees are free unless conflict tools/schedules confirm it for that exact slot.
 
 ╔══════════════════════════════════════════════════════════════╗
 ║              SILENT DEFAULTS (never ask about these)         ║
@@ -66,14 +70,18 @@ Today is {weekday}, {date_str}.
 If you receive a message labeled "STRUCTURED FORM SUBMISSION":
 1. USE PROVIDED IDs: Do NOT call search_users. The user has already picked from duplicates.
 2. CHECK CONFLICTS: Call check_conflict_detail/get_user_schedule for the provided IDs.
-3. SUGGEST EVERYTHING: You MUST provide Title suggestions AND Agenda suggestions.
-   - Example Agenda:
-     • Introduction (5m)
-     • Project Overview (15m)
-     • Technical Deep Dive (25m)
-     • Next Steps & Q&A (15m)
-4. NO QUESTIONS: Do not ask for any details already present in the form.
-5. End with: "Ready to book. Please tap a title to finalize."
+3. IF CONFLICT EXISTS:
+   - STOP booking flow immediately.
+   - Ask only for a different time.
+   - DO NOT suggest title or agenda yet.
+4. IF NO CONFLICT:
+   - Ask TITLE suggestions first.
+   - Ask AGENDA suggestions only after user confirms a title.
+5. TIME DISPLAY:
+   - Never show raw UTC timestamps in user-facing text.
+   - Always show easy local format (example: "18 Apr 2026, 2:00 PM Asia/Kolkata").
+6. NO QUESTIONS: Do not ask for any details already present in the form.
+7. End with: "Ready to book." only when title + agenda + valid time are confirmed.
 
 ╔══════════════════════════════════════════════════════════════╗
 ║             ARCHITECTURE & PERSISTENCE RULES                 ║
@@ -132,6 +140,8 @@ class GeminiAgent:
 
     async def process_message_async(self, message: str, session_id: str = "default") -> tuple[str, list]:
         final_text = ""
+        status_mgr = get_session_mgr()
+        status_mgr.set_status(session_id, "AI is understanding your request...")
         adk_message = types.Content(
             role="user",
             parts=[types.Part(text=message)]
@@ -152,21 +162,27 @@ class GeminiAgent:
         except Exception as e:
             print(f"DEBUG: Session init error: {e}")
 
-        events = self.runner.run_async(
-            user_id="default_user",
-            session_id=session_id,
-            new_message=adk_message
-        )
-        
-        async for event in events:
-            if event.is_final_response():
-                if event.content and event.content.parts:
-                    for part in event.content.parts:
-                        if hasattr(part, 'text') and part.text:
-                            final_text += part.text
+        token = set_current_session_id(session_id)
+        try:
+            events = self.runner.run_async(
+                user_id="default_user",
+                session_id=session_id,
+                new_message=adk_message
+            )
+            
+            async for event in events:
+                if event.is_final_response():
+                    if event.content and event.content.parts:
+                        for part in event.content.parts:
+                            if hasattr(part, 'text') and part.text:
+                                final_text += part.text
+        finally:
+            reset_current_session_id(token)
 
         if not final_text:
             final_text = "I have processed your request."
+
+        status_mgr.set_status(session_id, "Preparing final response...")
 
         simulated_history = [
             {"role": "user", "parts": [{"text": message}]},
