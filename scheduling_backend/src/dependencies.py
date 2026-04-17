@@ -3,6 +3,7 @@ from .session_manager import SessionManager
 
 _repo = None
 _session_mgr = None
+_ai_agent = None
 
 def get_repo():
     global _repo
@@ -15,3 +16,11 @@ def get_session_mgr():
     if _session_mgr is None:
         _session_mgr = SessionManager()
     return _session_mgr
+
+
+def get_ai_agent():
+    global _ai_agent
+    if _ai_agent is None:
+        from .services import AIAgent
+        _ai_agent = AIAgent(get_repo(), get_session_mgr())
+    return _ai_agent

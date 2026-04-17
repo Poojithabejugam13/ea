@@ -4,6 +4,7 @@ SessionManager — Redis-backed state with 4 namespaces:
   meeting:{fingerprint} → Booked meetings (duplicate detection, TTL=7d)
   prefs:{organiser_id}  → Recurrence + presenter defaults (no TTL)
   search:{query_hash}   → search_users result cache (TTL=1h)
+  status:{id}           → Live request status text (short TTL)
 
 Resilient: Falls back to in-memory if Redis is unavailable.
 """
@@ -75,6 +76,16 @@ class SessionManager:
 
     def delete_session(self, session_id: str):
         self._r_del(f"session:{session_id}")
+
+    def set_status(self, session_id: str, message: str, ttl: int = 120):
+        self._r_set(f"status:{session_id}", {"message": message}, ttl=ttl)
+
+    def get_status(self, session_id: str) -> str:
+        data = self._r_get(f"status:{session_id}") or {}
+        return data.get("message", "")
+
+    def clear_status(self, session_id: str):
+        self._r_del(f"status:{session_id}")
 
     # ──────────────────────────────────────────────────────────────────────
     # 2. Booked meetings — duplicate detection
