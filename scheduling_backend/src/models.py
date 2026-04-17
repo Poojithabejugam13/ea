@@ -1,7 +1,13 @@
+"""Data models for Calendar and User entities aligned with Microsoft Graph API.
+All models use Pydantic for validation and serialization.
+"""
+
 from pydantic import BaseModel
 from typing import List, Optional
 
+# Email and attendee representation (Graph API aligned)
 class EmailAddress(BaseModel):
+    """Email contact with display name."""
     address: str
     name: str
 

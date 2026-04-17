@@ -1,3 +1,13 @@
+"""
+Main FastAPI application entry point for the AI Executive Assistant backend.
+Orchestrates:
+  - Microsoft Graph API mocked endpoints (users, events, calendar)
+  - AI agent endpoint for processing scheduling requests
+  - MCP (Model Context Protocol) server for structured tool execution
+  - Redis-backed session management
+  - CORS support for Angular frontend
+"""
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -11,7 +21,7 @@ from .mcp_server import mcp
 
 app = FastAPI(title="Graph API Mock & Scheduling Agent")
 
-# Simulated Firewall Middleware
+# Simulated Firewall Middleware — validates Entra ID tokens for Graph API routes
 class FirewallMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -27,11 +37,24 @@ app.add_middleware(FirewallMiddleware)
 # Add CORS Middleware for Angular Frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4200", "http://127.0.0.1:4200"],
+    allow_origin_regex=".*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.googleapis.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: https:; "
+        "connect-src 'self' http://localhost:* ws://localhost:* https://*.googleapis.com;"
+    )
+    return response
 
 @app.post("/agent/process")
 async def process_agent_request(payload: dict = Body(...)):

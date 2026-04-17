@@ -7,6 +7,8 @@ so repeated lookups never hit the DB or LLM tool-call loop again.
 from mcp.server.fastmcp import FastMCP
 from .dependencies import get_repo, get_session_mgr
 from .models import User, Event, EventTime, AttendeeEntry, EmailAddress, OnlineMeeting
+from .session_manager import SessionManager
+from .db_client import insert_meeting
 import uuid
 from datetime import datetime, timedelta
 
@@ -21,10 +23,9 @@ def _get_organiser():
 # ---------------------------------------------------------------------------
 @mcp.tool()
 def search_users(query: str) -> list[dict]:
-    """Fuzzy search users by name, department, job title.
-    Handles typos, caps, special chars.
-    Returns id, name, email (EID), timezone, jobTitle, department.
-    Results are cached in Redis for 1 hour.
+    """Fuzzy search users by name, department, email, or job title.
+    Use this to find EIDs (user IDs) for the attendees list.
+    Returns: list of {"id": "eid_here", "name": "full_name", "email": "email_here", ...}
     """
     cached = get_session_mgr().get_cached_search(query)
     if cached is not None:
@@ -158,6 +159,24 @@ def check_conflict_detail(user_id: str, start: str, end: str, buffer_mins: int =
     return {"conflict": False, "type": "none"}
 
 
+def _resolve_attendees(raw_attendees: list) -> list[dict]:
+    """Helper to convert a list of strings (names) or dicts into proper attendee dicts.
+    Prevents 'string indices must be integers' if LLM sends strings.
+    """
+    resolved = []
+    for a in raw_attendees:
+        if isinstance(a, str):
+            # If LLM sent a name string, try to find the user to get their ID
+            results = get_repo().search_users(a)
+            if results:
+                user = results[0]  # Take the best match
+                resolved.append({"id": user.id, "name": user.displayName, "type": "required"})
+            else:
+                continue
+        elif isinstance(a, dict) and "id" in a:
+            resolved.append(a)
+    return resolved
+
 # ---------------------------------------------------------------------------
 # Tool: create_meeting
 # ---------------------------------------------------------------------------
@@ -168,15 +187,24 @@ def create_meeting(
     location: str,
     start: str,
     end: str,
-    attendees: list = [],
+    attendees: list = [],  # List of {"id": "eid_here", "type": "required|optional"}
     recurrence: str = "none",
     presenter: str = "",
 ) -> dict:
-    """Book a meeting. Poojitha Reddy is always the organiser.
-    Saves to all attendees' calendars. Returns join URL and fingerprint for Redis.
-    recurrence: 'none' | 'daily' | 'weekly' | 'biweekly' | 'monthly'
-    presenter: name of person presenting/leading (empty = organiser)
+    """Book a new meeting. Poojitha Reddy is always the organiser.
+    
+    Args:
+        subject: Clear meeting title.
+        agenda: Meeting goals/topics.
+        location: e.g. 'Virtual' or a Room Name.
+        start: ISO 8601 start time (UTC).
+        end: ISO 8601 end time (UTC).
+        attendees: IMPORTANT: List of objects e.g. [{"id": "eid_123", "type": "required"}]. 
+                  Search users first to get their IDs.
+        recurrence: 'none' | 'daily' | 'weekly' | 'biweekly' | 'monthly'
+        presenter: Name of lead (empty = organiser).
     """
+    attendees = _resolve_attendees(attendees)
     event_id = f"e_{uuid.uuid4().hex[:8]}"
     join_url = get_repo().make_join_url(event_id)
 
@@ -223,6 +251,16 @@ def create_meeting(
         "fingerprint": fingerprint,
     })
 
+    # ── Persist to PostgreSQL (meetings table) ──────────────────────
+    insert_meeting(
+        organiser_name=_get_organiser().displayName,
+        start_date=start,
+        end_date=end,
+        meeting_title=subject,
+        meeting_agenda=agenda,
+        participants=[a.emailAddress.name for a in attendee_entries],
+    )
+
     for ae in attendee_entries:
         if ae.userId:
             get_repo().send_notification(
@@ -248,9 +286,9 @@ def create_meeting(
         "end": end,
         "location": location,
         "recurrence": recurrence,
-        "presenter": presenter or ORGANISER.displayName,
+        "presenter": presenter or _get_organiser().displayName,
         "join_url": join_url,
-        "organizer": ORGANISER.displayName,
+        "organizer": _get_organiser().displayName,
         "attendees": [a.emailAddress.name for a in attendee_entries],
     }
 
@@ -267,15 +305,20 @@ def update_meeting(
     new_subject: str = "",
     new_agenda: str = "",
     new_location: str = "",
-    new_attendees: list = [],   # [{id, name, email, type}] — merged with existing
+    new_attendees: list = [],   # [{id, name, email, type}]
     new_recurrence: str = "",
     new_presenter: str = "",
 ) -> dict:
     """Update any fields of an existing meeting.
-    Only provide the fields that are changing — everything else is kept as-is.
-    new_attendees is MERGED with existing attendees (pass removals explicitly with type='remove').
-    Also refreshes the Redis fingerprint so duplicate detection stays accurate.
+    Only provide the fields that are changing.
+    
+    Args:
+        event_id: ID of the meeting to update.
+        fingerprint: (Optional) The Redis fingerprint of the meeting.
+        new_attendees: List of objects e.g. [{"id": "eid_123", "type": "required"}].
+                      To remove someone, use {"id": "eid_123", "type": "remove"}.
     """
+    new_attendees = _resolve_attendees(new_attendees)
     # 1. Time update
     if new_start and new_end:
         get_repo().update_event(event_id, new_start, new_end)
