@@ -334,6 +334,7 @@ def create_meeting(
         "presenter": presenter or _get_organiser().displayName,
         "organizer": _get_organiser().displayName,
         "attendees": [a.emailAddress.name for a in attendee_entries],
+        "attendee_ids": [a.get("id") for a in attendees if a.get("id")],
         "fingerprint": fingerprint,
     })
 
@@ -496,6 +497,7 @@ def update_meeting(
         "presenter": presenter,
         "organizer": _get_organiser().displayName,
         "attendees": all_attendee_names,
+        "attendee_ids": attendee_ids,
         "fingerprint": new_fingerprint,
     })
 

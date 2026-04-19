@@ -1,4 +1,4 @@
-import { Component, EventEmitter, Output, inject, OnInit, ViewChild, ElementRef } from '@angular/core';
+import { Component, EventEmitter, Output, Input, inject, OnInit, OnChanges, SimpleChanges, ViewChild, ElementRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../api';
@@ -321,10 +321,12 @@ interface Attendee {
     .clear-inp-btn:hover { color: #ef4444; }
   `]
 })
-export class ScheduleFormComponent implements OnInit {
+export class ScheduleFormComponent implements OnInit, OnChanges {
   @ViewChild('attendeeInput') attendeeInput!: ElementRef;
   api = inject(ApiService);
   @Output() submitForm = new EventEmitter<any>();
+  @Input() prefillData: any = null;
+  @Input() updateMode = false;
 
   subject = '';
   selectedTeam = 'General';
@@ -403,6 +405,50 @@ export class ScheduleFormComponent implements OnInit {
       debounceTime(300),
       switchMap(term => this.api.getLocationSuggestions(term))
     ).subscribe(res => this.locationSuggestions = res);
+  }
+
+  ngOnChanges(changes: SimpleChanges) {
+    if (changes['prefillData'] && this.prefillData) {
+      this.applyPrefill(this.prefillData);
+    }
+  }
+
+  private applyPrefill(data: any) {
+    this.subject = data.subject || '';
+    this.recurrence = data.recurrence || 'once';
+    this.locationStr = data.location || '';
+    this.room = data.room || '';
+    this.presenter = data.presenter || '';
+    this.teamSearchQuery = data.team || 'General';
+    this.selectedTeam = data.team || 'General';
+
+    const attendeeIds: string[] = data.attendee_ids || [];
+    const attendeeNames: string[] = data.attendees || [];
+    this.selectedAttendees = attendeeIds.map((id, i) => ({
+      id: String(id),
+      name: attendeeNames[i] || `User ${id}`,
+      email: '',
+      department: '',
+      importance: 'required' as const,
+    }));
+
+    if (data.start) {
+      try {
+        const s = new Date(data.start);
+        this.date = s.toISOString().slice(0, 10);
+        let hrs = s.getHours();
+        const mins = s.getMinutes().toString().padStart(2, '0');
+        this.amPm = hrs >= 12 ? 'PM' : 'AM';
+        hrs = hrs % 12 || 12;
+        this.time12 = `${hrs}:${mins}`;
+      } catch {}
+    }
+    if (data.start && data.end) {
+      try {
+        const mins = Math.max(30, Math.round((new Date(data.end).getTime() - new Date(data.start).getTime()) / 60000));
+        this.duration = String(mins);
+      } catch {}
+    }
   }
 
   filterTeams() {
@@ -532,7 +578,13 @@ export class ScheduleFormComponent implements OnInit {
       recurrence: this.recurrence,
       room: this.room,
       location: this.locationStr,
-      presenter: this.presenter
+      presenter: this.presenter,
+      updateMode: this.updateMode,
+      eventId: this.prefillData?.event_id || '',
+      fingerprint: this.prefillData?.fingerprint || this.prefillData?._fingerprint || '',
+      agenda: this.prefillData?.agenda || '',
+      originalMeeting: this.prefillData || {},
+      ...this.getTimeRange(),
     });
   }
 }
