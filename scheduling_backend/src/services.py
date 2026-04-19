@@ -386,9 +386,97 @@ class AIAgent:
             f"Decisions and Next Steps (15m)"
         )
 
+    def _build_one_on_one_agenda(self, duration_mins: int) -> str:
+        duration = max(30, int(duration_mins or 60))
+        middle = max(15, duration - 20)
+        return (
+            f"Quick Check-in (5m); "
+            f"One-on-one Discussion ({middle}m); "
+            f"Action Items and Next Steps (15m)"
+        )
+
+    def _extract_conflict_context(self, text: str) -> dict:
+        """
+        Best-effort extraction for conflict follow-up buttons.
+        Pull attendee EIDs, date, and duration from user prompt text.
+        """
+        low = text.lower()
+        ids = list(dict.fromkeys(re.findall(r"\b(?:eid\s*[:#-]?\s*)?(\d{2,})\b", low)))
+        m_date = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
+        date_str = m_date.group(1) if m_date else ""
+
+        duration = 60
+        m_dur_min = re.search(r"\b(\d+)\s*(?:min|mins|minutes)\b", low)
+        if m_dur_min:
+            duration = max(30, int(m_dur_min.group(1)))
+        elif re.search(r"\b1\.?5\s*(?:hour|hr|hours|hrs)\b", low):
+            duration = 90
+        elif re.search(r"\b2\s*(?:hour|hr|hours|hrs)\b", low):
+            duration = 120
+        elif re.search(r"\b1\s*(?:hour|hr|hours|hrs)\b", low):
+            duration = 60
+
+        return {"ids": ids, "date": date_str, "duration_mins": duration}
+
     def _build_default_title(self, topic: str, attendee_name: str) -> str:
         cleaned = (topic or "General discussion").strip()
         return f"{cleaned} with {attendee_name}"
+
+    def _book_from_payload(self, payload: dict, session_data: dict, session_id: str) -> dict:
+        result = create_meeting(
+            subject=payload["subject"],
+            agenda=payload["agenda"],
+            location=payload.get("location", "Virtual"),
+            start=payload["start"],
+            end=payload["end"],
+            attendees=[{"id": payload["attendee_id"], "type": "required"}],
+            recurrence=payload.get("recurrence", "none"),
+            presenter=payload.get("presenter", ""),
+        )
+        if result.get("status") == "conflict":
+            return {
+                "response": "I could not finalize booking due to a conflict. Please share another date.",
+                "intent": "conflict_detected",
+                "options": [],
+                "option_type": "conflict",
+                "titled_sections": {},
+            }
+        session_data["last_meeting"] = {
+            "event_id": result.get("event_id", ""),
+            "subject": payload["subject"],
+            "agenda": payload["agenda"],
+            "start": result.get("start", payload["start"]),
+            "end": result.get("end", payload["end"]),
+            "location": payload.get("location", "Virtual"),
+            "attendees": [{"id": payload["attendee_id"], "type": "required"}],
+        }
+        session_data.pop("pending_single_confirm", None)
+        self.session_mgr.set_session(session_id, session_data)
+        return {
+            "response": (
+                f'Great — meeting booked.\n'
+                f'Title: {payload["subject"]}\n'
+                f'When: {_format_dt_for_ui(_safe_iso_utc(result["start"]))} to '
+                f'{_format_dt_for_ui(_safe_iso_utc(result["end"]))}\n'
+                f'Agenda: {payload["agenda"]}\n'
+                f'Join: {result.get("join_url","")}'
+            ),
+            "intent": "meeting_booked",
+            "options": [],
+            "option_type": "general",
+            "titled_sections": {},
+            "meeting_data": {
+                "event_id": result.get("event_id", ""),
+                "fingerprint": result.get("fingerprint", ""),
+                "subject": payload["subject"],
+                "agenda": payload["agenda"],
+                "start": result.get("start", payload["start"]),
+                "end": result.get("end", payload["end"]),
+                "location": payload.get("location", "Virtual"),
+                "recurrence": payload.get("recurrence", "none"),
+                "presenter": payload.get("presenter", ""),
+            },
+        }
 
     def _single_person_auto_book(self, prompt: str, session_data: dict, session_id: str) -> dict | None:
         low = prompt.lower()
@@ -398,9 +486,32 @@ class AIAgent:
             return None
         if "team" in low:
             return None
+        # Hard guard: do NOT use single-person fast path if prompt indicates multiple attendees.
+        if any(k in low for k in [
+            " and ",
+            ",",
+            "attendees:",
+            "participants",
+            "everyone",
+            "all of",
+            "together with",
+        ]):
+            # If there are 2+ distinct EIDs, definitely multi-attendee.
+            ids_in_prompt = list(dict.fromkeys(re.findall(r"\b(\d{2,})\b", prompt)))
+            if len(ids_in_prompt) >= 2:
+                return None
+            # If at least two "Name Name" like patterns appear, treat as multi.
+            name_like = re.findall(r"\b[A-Z][a-z]+\s+[A-Z][a-z]+\b", prompt)
+            if len(set(name_like)) >= 2:
+                return None
 
         organiser = self.repo.get_organiser()
         organiser_id = organiser.id if organiser else "103"
+        organiser_dept = (organiser.department or "").strip().lower() if organiser else ""
+        extracted_name = ""
+        m_with = re.search(r"\bwith\s+([a-zA-Z][a-zA-Z]+)\b", low)
+        if m_with:
+            extracted_name = m_with.group(1).strip()
 
         # Resolve exactly one attendee for deterministic auto-book.
         candidate_ids = re.findall(r"\b(\d{2,})\b", prompt)
@@ -419,16 +530,24 @@ class AIAgent:
         if attendee is None:
             # Fuzzy fallback for inputs like "schedule with anand".
             fuzzy = [u for u in self.repo.search_users(prompt) if u.id != organiser_id]
+            if extracted_name:
+                by_name_token = [u for u in self.repo.search_users(extracted_name) if u.id != organiser_id]
+                if by_name_token:
+                    fuzzy = by_name_token
             if len(fuzzy) == 1:
                 attendee = fuzzy[0]
             elif len(fuzzy) > 1:
-                # If top result is clearly stronger, auto-pick it to avoid extra questions.
-                top = fuzzy[0]
-                second = fuzzy[1]
-                top_name = top.displayName.lower()
-                second_name = second.displayName.lower()
-                if top_name in low and second_name not in low:
-                    attendee = top
+                # Prefer organiser's department if duplicate names/matches exist.
+                same_team = [u for u in fuzzy if (u.department or "").strip().lower() == organiser_dept]
+                if len(same_team) == 1:
+                    attendee = same_team[0]
+                else:
+                    top = fuzzy[0]
+                    second = fuzzy[1]
+                    top_name = top.displayName.lower()
+                    second_name = second.displayName.lower()
+                    if top_name in low and second_name not in low:
+                        attendee = top
         if attendee is None:
             return None
 
@@ -494,52 +613,125 @@ class AIAgent:
 
         topic = _extract_topic_from_prompt(prompt) or "One-on-one meet"
         subject = f"One-on-one meet with {attendee.displayName}"
-        agenda = self._build_default_agenda(topic, duration_mins)
-        result = create_meeting(
-            subject=subject,
-            agenda=agenda,
-            location="Virtual",
-            start=chosen_start,
-            end=chosen_end,
-            attendees=[{"id": attendee.id, "type": "required"}],
-            recurrence="none",
-            presenter=organiser.displayName if organiser else "",
-        )
-        if result.get("status") == "conflict":
+        agenda = self._build_one_on_one_agenda(duration_mins)
+        # If ambiguity exists (same full name OR same first-name token), confirm once.
+        all_users = [u for u in self.repo.get_all_users() if u.id != organiser_id]
+        same_name = [u for u in all_users if u.displayName.strip().lower() == attendee.displayName.strip().lower()]
+        same_first_name = []
+        token_matches = []
+        if extracted_name:
+            same_first_name = [
+                u for u in all_users
+                if u.displayName.strip().lower().startswith(extracted_name.lower() + " ")
+            ]
+            token_matches = [u for u in self.repo.search_users(extracted_name) if u.id != organiser_id]
+        if len(same_name) > 1 or len(same_first_name) > 1 or len(token_matches) > 1:
+            raw_candidates = same_first_name or token_matches or same_name
+            candidates = []
+            seen = set()
+            for c in raw_candidates:
+                if c.id in seen:
+                    continue
+                seen.add(c.id)
+                candidates.append({
+                    "id": c.id,
+                    "name": c.displayName,
+                    "department": c.department,
+                    "email": c.mail,
+                })
+            if not any(str(c.get("id")) == str(attendee.id) for c in candidates):
+                candidates.insert(0, {
+                    "id": attendee.id,
+                    "name": attendee.displayName,
+                    "department": attendee.department,
+                    "email": attendee.mail,
+                })
+            selection_map = {
+                f'{c["name"]} (EID: {c["id"]}) - {c["department"]}': str(c["id"])
+                for c in candidates
+            }
+
+            session_data["pending_single_confirm"] = {
+                "attendee_id": attendee.id,
+                "attendee_name": attendee.displayName,
+                "department": attendee.department,
+                "subject": subject,
+                "agenda": agenda,
+                "start": chosen_start,
+                "end": chosen_end,
+                "location": "Virtual",
+                "recurrence": "none",
+                "presenter": organiser.displayName if organiser else "",
+                "candidates": candidates,
+            }
+            self.session_mgr.set_session(session_id, session_data)
             return {
-                "response": "I could not finalize booking due to a conflict. Please share another date.",
-                "intent": "conflict_detected",
-                "options": [],
-                "option_type": "conflict",
+                "response": (
+                    f'I found multiple matches for "{extracted_name or attendee.displayName}".\n'
+                    f'I selected {attendee.displayName} from {attendee.department} department '
+                    f'(same team preference).\n'
+                    f'Shall I go ahead and book the meeting?'
+                ),
+                "intent": "confirm_attendee_selection",
+                "options": ["Yes, proceed"],
+                "option_type": "attendee_confirm",
+                "candidate_options": list(selection_map.keys()),
+                "selection_map": selection_map,
                 "titled_sections": {},
             }
 
-        session_data["last_meeting"] = {
-            "event_id": result.get("event_id", ""),
+        return self._book_from_payload({
+            "attendee_id": attendee.id,
             "subject": subject,
             "agenda": agenda,
-            "start": result.get("start", chosen_start),
-            "end": result.get("end", chosen_end),
-            "location": result.get("location", "Virtual"),
-            "attendees": [{"id": attendee.id, "type": "required"}],
-        }
-        self.session_mgr.set_session(session_id, session_data)
-        return {
-            "response": (
-                f'The meeting "{subject}" has been scheduled for '
-                f'{_format_dt_for_ui(_safe_iso_utc(result["start"]))} to '
-                f'{_format_dt_for_ui(_safe_iso_utc(result["end"]))}. '
-                f'Agenda: {agenda}\n{result.get("join_url","")}'
-            ),
-            "intent": "meeting_booked",
-            "options": [],
-            "option_type": "general",
-            "titled_sections": {},
-        }
+            "start": chosen_start,
+            "end": chosen_end,
+            "location": "Virtual",
+            "recurrence": "none",
+            "presenter": organiser.displayName if organiser else "",
+        }, session_data, session_id)
 
     def process_prompt(self, prompt: str, session_id: str = "default") -> dict:
         self.session_mgr.set_status(session_id, "Processing request...")
         session_data = self.session_mgr.get_session(session_id) or {}
+        pending = session_data.get("pending_single_confirm")
+        if pending:
+            low = prompt.strip().lower()
+            m_select = re.search(r"select attendee:\s*(\d+)", low)
+            if m_select:
+                selected_id = m_select.group(1)
+                selected = next((c for c in (pending.get("candidates") or []) if str(c.get("id")) == selected_id), None)
+                if selected:
+                    pending["attendee_id"] = str(selected.get("id"))
+                    pending["attendee_name"] = selected.get("name", pending.get("attendee_name", "Attendee"))
+                    pending["department"] = selected.get("department", pending.get("department", ""))
+                    pending["subject"] = f'One-on-one meet with {pending["attendee_name"]}'
+                    session_data["pending_single_confirm"] = pending
+                    self.session_mgr.set_session(session_id, session_data)
+                    booked = self._book_from_payload(pending, session_data, session_id)
+                    session_data = self.session_mgr.get_session(session_id) or {}
+                    session_data = self._append_history(session_data, prompt, booked.get("response", ""))
+                    self.session_mgr.set_session(session_id, session_data)
+                    self.session_mgr.set_status(session_id, "Preparing final response...")
+                    return booked
+            if any(x in low for x in ["yes", "proceed", "continue", "book", "ok", "okay"]):
+                booked = self._book_from_payload(pending, session_data, session_id)
+                session_data = self.session_mgr.get_session(session_id) or {}
+                session_data = self._append_history(session_data, prompt, booked.get("response", ""))
+                self.session_mgr.set_session(session_id, session_data)
+                self.session_mgr.set_status(session_id, "Preparing final response...")
+                return booked
+            if any(x in low for x in ["no", "another", "different", "change"]):
+                session_data.pop("pending_single_confirm", None)
+                self.session_mgr.set_session(session_id, session_data)
+                return {
+                    "response": "Okay. Please share the exact person name or EID you want.",
+                    "intent": "awaiting_attendee_confirmation",
+                    "options": [],
+                    "option_type": "general",
+                    "titled_sections": {},
+                }
+
         single_auto = self._single_person_auto_book(prompt, session_data, session_id)
         if single_auto is not None:
             session_data = self.session_mgr.get_session(session_id) or {}
@@ -612,8 +804,24 @@ class AIAgent:
         if is_conflict_flow:
             response_text = _remove_title_agenda_blocks(response_text)
             titled_sections = {}
-            options = []
             option_type = "conflict"
+
+            # Provide quick-action buttons for conflict recovery.
+            conflict_ctx = self._extract_conflict_context(prompt)
+            attendee_ids = [i for i in conflict_ctx.get("ids", []) if self.repo.get_user_by_id(i)]
+            if attendee_ids and conflict_ctx.get("date"):
+                organiser = self.repo.get_organiser()
+                organiser_id = organiser.id if organiser else "103"
+                check_ids = list(dict.fromkeys(attendee_ids + [organiser_id]))
+                slots = self.repo.get_free_slots(
+                    check_ids,
+                    conflict_ctx["date"],
+                    conflict_ctx.get("duration_mins", 60)
+                )
+                slot_options = [_format_dt_for_ui(_safe_iso_utc(s["start"])) for s in slots]
+                options = slot_options + ["Proceed with given time"]
+            else:
+                options = ["Proceed with given time"]
 
         has_titles = bool(titled_sections.get("titles"))
         has_agendas = bool(titled_sections.get("agendas"))
@@ -850,6 +1058,17 @@ class AIAgent:
                 "options": [],
                 "option_type": "general",
                 "titled_sections": {},
+                "meeting_data": {
+                    "event_id": result.get("event_id", ""),
+                    "fingerprint": result.get("fingerprint", ""),
+                    "subject": auto_subject,
+                    "agenda": auto_agenda,
+                    "start": result.get("start", parsed.get("start", "")),
+                    "end": result.get("end", parsed.get("end", "")),
+                    "location": result.get("location", parsed.get("location", "")),
+                    "recurrence": parsed.get("recurrence", "none"),
+                    "presenter": parsed.get("presenter", ""),
+                },
             }
 
         if draft and lower.startswith("book slot:"):
@@ -926,6 +1145,17 @@ class AIAgent:
                 "options": [],
                 "option_type": "general",
                 "titled_sections": {},
+                "meeting_data": {
+                    "event_id": result.get("event_id", ""),
+                    "fingerprint": result.get("fingerprint", ""),
+                    "subject": auto_subject,
+                    "agenda": auto_agenda,
+                    "start": result.get("start", draft.get("start", "")),
+                    "end": result.get("end", draft.get("end", "")),
+                    "location": result.get("location", draft.get("location", "")),
+                    "recurrence": draft.get("recurrence", "none"),
+                    "presenter": draft.get("presenter", ""),
+                },
             }
 
         if draft and lower.startswith("use title:"):
@@ -992,6 +1222,17 @@ class AIAgent:
                 "options": [],
                 "option_type": "general",
                 "titled_sections": {},
+                "meeting_data": {
+                    "event_id": result.get("event_id", ""),
+                    "fingerprint": result.get("fingerprint", ""),
+                    "subject": subject,
+                    "agenda": chosen,
+                    "start": result.get("start", draft.get("start", "")),
+                    "end": result.get("end", draft.get("end", "")),
+                    "location": result.get("location", draft.get("location", "")),
+                    "recurrence": draft.get("recurrence", "none"),
+                    "presenter": draft.get("presenter", ""),
+                },
             }
 
         # Handle non-bracketed structured prompts too (e.g., "I have all details... Topic: ...")
@@ -1143,6 +1384,17 @@ class AIAgent:
                 "options": [],
                 "option_type": "general",
                 "titled_sections": {},
+                "meeting_data": {
+                    "event_id": result.get("event_id", ""),
+                    "fingerprint": result.get("fingerprint", ""),
+                    "subject": auto_subject,
+                    "agenda": auto_agenda,
+                    "start": result.get("start", parsed.get("start", "")),
+                    "end": result.get("end", parsed.get("end", "")),
+                    "location": result.get("location", parsed.get("location", "")),
+                    "recurrence": parsed.get("recurrence", "none"),
+                    "presenter": parsed.get("presenter", ""),
+                },
             }
 
         return None
