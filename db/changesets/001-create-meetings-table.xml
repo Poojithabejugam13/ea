@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.24.xsd">
+
+    <!-- ═══════════════════════════════════════════════════════════════
+         Changeset 001 — Create meetings table
+         Author : Rithwika
+         Purpose: Log every meeting created by the scheduling agent
+         ═══════════════════════════════════════════════════════════════ -->
+
+    <changeSet id="001-create-meetings-table" author="Rithwika">
+
+        <preConditions onFail="MARK_RAN">
+            <not>
+                <tableExists tableName="meetings"/>
+            </not>
+        </preConditions>
+
+        <createTable tableName="meetings">
+
+            <!-- Primary key — auto-generated UUID -->
+            <column name="id" type="UUID">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+
+            <!-- Organiser who created the meeting -->
+            <column name="organiser_name" type="VARCHAR(255)">
+                <constraints nullable="false"/>
+            </column>
+
+            <!-- Meeting time window (stored as TIMESTAMPTZ for timezone safety) -->
+            <column name="start_date" type="TIMESTAMPTZ">
+                <constraints nullable="false"/>
+            </column>
+
+            <column name="end_date" type="TIMESTAMPTZ">
+                <constraints nullable="false"/>
+            </column>
+
+            <!-- Subject / title of the meeting -->
+            <column name="meeting_title" type="VARCHAR(500)">
+                <constraints nullable="false"/>
+            </column>
+
+            <!-- Agenda / body preview -->
+            <column name="meeting_agenda" type="TEXT"/>
+
+            <!-- Participants stored as a JSON array, e.g. ["Alice","Bob"] -->
+            <column name="participants" type="TEXT"/>
+
+            <!-- Audit timestamp -->
+            <column name="created_at" type="TIMESTAMPTZ" defaultValueComputed="NOW()">
+                <constraints nullable="false"/>
+            </column>
+
+        </createTable>
+
+        <rollback>
+            <dropTable tableName="meetings"/>
+        </rollback>
+
+    </changeSet>
+
+</databaseChangeLog>

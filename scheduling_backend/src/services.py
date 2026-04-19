@@ -359,7 +359,7 @@ class AIAgent:
         self.session_mgr = session_manager
         self.scheduler = SchedulingService(repository)
         try:
-            self.gemini = RealGeminiAgent(repository)
+            self.gemini = RealGeminiAgent(repository, session_manager)
             self.use_ai = True
         except Exception as e:
             print(f"Vertex AI init failed: {e}")

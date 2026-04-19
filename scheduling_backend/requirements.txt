@@ -11,3 +11,4 @@ mcp
 google-adk
 nest-asyncio
 google-genai
+psycopg2-binary
