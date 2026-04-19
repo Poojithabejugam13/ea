@@ -77,7 +77,7 @@ interface Message {
                 <!-- DUPLICATE ACTIONS -->
                 <ng-container *ngIf="msg.optionType === 'duplicate_action'">
                   <div class="dup-grid">
-                    <button class="dup-update" (click)="sendAction('I want to update this meeting with new time or details.')">🔄 Update time / details</button>
+                    <button class="dup-update" (click)="startDuplicateUpdate(msg.existingMeeting)">🔄 Update time / details</button>
                     <button class="dup-del" (click)="deleteDuplicate(msg.existingMeeting)">🗑️ Cancel & delete</button>
                     <button class="dup-new" (click)="sendAction('Book this as a completely new separate meeting, ignore the existing one.')">➕ Book as new separate meeting</button>
                   </div>
@@ -370,9 +370,33 @@ export class ChatComponent {
 
   deleteDuplicate(existingMeeting: any) {
     if (!existingMeeting) return;
-    this.api.deleteMeeting(existingMeeting.fingerprint, existingMeeting.event_id).subscribe(() => {
-      this.sendAction("Meeting cancelled and deleted.");
+    const fingerprint = existingMeeting.fingerprint || existingMeeting._fingerprint || '';
+    const eventId = existingMeeting.event_id || '';
+    if (!fingerprint && !eventId) {
+      this.messages.push({ role: 'assistant', content: '❌ Could not find meeting id to delete. Please retry.' });
+      this.scrollToBottom();
+      return;
+    }
+    this.api.deleteMeeting(fingerprint, eventId).subscribe({
+      next: () => this.sendAction(`Meeting cancelled and deleted. event_id=${eventId}; fingerprint=${fingerprint}`),
+      error: (err) => {
+        this.messages.push({ role: 'assistant', content: '❌ Failed to delete meeting: ' + err.message });
+        this.scrollToBottom();
+      }
     });
+  }
+
+  startDuplicateUpdate(existingMeeting: any) {
+    if (!existingMeeting) {
+      this.sendAction('I want to update this meeting with new time or details.');
+      return;
+    }
+    const fingerprint = existingMeeting.fingerprint || existingMeeting._fingerprint || '';
+    const eventId = existingMeeting.event_id || '';
+    this.sendAction(
+      `Please update existing meeting. event_id=${eventId}; fingerprint=${fingerprint}. ` +
+      `I will provide new time/details now.`
+    );
   }
 
   confirmAttendees(options: string[]) {
@@ -413,6 +437,11 @@ export class ChatComponent {
 
   clearChat() {
     this.messages = [];
+  }
+
+  addAssistantMessage(content: string) {
+    this.messages.push({ role: 'assistant', content });
+    this.scrollToBottom();
   }
 
   private getOrCreateSessionId(): string {
