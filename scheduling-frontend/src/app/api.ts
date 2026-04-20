@@ -14,6 +14,8 @@ export class ApiService {
     return this.http.post(`${this.baseUrl}/agent/process`, {
       prompt,
       session_id: sessionId,
+      // Treating the current UI user as Poojitha (103) until Teams Login is built
+      user_id: "103",
     });
   }
 
@@ -49,7 +51,7 @@ export class ApiService {
   getPrefs(): Observable<any> {
     return this.http.get(`${this.baseUrl}/prefs`);
   }
-  
+
   savePrefs(prefs: any): Observable<any> {
     return this.http.post(`${this.baseUrl}/prefs`, prefs);
   }
@@ -58,7 +60,7 @@ export class ApiService {
   getMeetings(): Observable<any> {
     return this.http.get(`${this.baseUrl}/meetings`);
   }
-  
+
   deleteMeeting(fingerprint: string, eventId: string): Observable<any> {
     return this.http.post(`${this.baseUrl}/meetings/delete`, {
       fingerprint, event_id: eventId

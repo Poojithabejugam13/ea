@@ -4,6 +4,7 @@ Routes — Graph API-aligned mock endpoints + new /prefs and /meetings endpoints
 
 from fastapi import APIRouter
 from .dependencies import get_repo, get_session_mgr
+from .db_client import delete_meeting_db
 from .models import Event, EventTime, AttendeeEntry, EmailAddress, OnlineMeeting
 
 router = APIRouter()
@@ -117,6 +118,7 @@ def delete_meeting(body: dict):
     if event_id:
         try:
             get_repo().delete_event(event_id)
+            delete_meeting_db(event_id)
         except Exception:
             pass
 

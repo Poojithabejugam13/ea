@@ -1,6 +1,8 @@
 from .repository import UserRepository
 from .session_manager import SessionManager
+from contextvars import ContextVar
 
+CALLER_USER_ID: ContextVar[str] = ContextVar("caller_user_id", default="")
 _repo = None
 _session_mgr = None
 _ai_agent = None
