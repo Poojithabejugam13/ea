@@ -1,12 +1,11 @@
-import { Component, ChangeDetectorRef, ViewChild, inject } from '@angular/core';
+import { Component, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ChatComponent } from './chat/chat';
-import { ScheduleFormComponent } from './schedule-form/schedule-form';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, ChatComponent, ScheduleFormComponent],
+  imports: [CommonModule, ChatComponent],
   template: `
     <div class="app-container">
       <header class="top-nav">
@@ -14,14 +13,10 @@ import { ScheduleFormComponent } from './schedule-form/schedule-form';
           <span class="sparkle">✨</span>
           <h1>AI Butler</h1>
         </div>
-        <button class="schedule-btn" (click)="toggleForm()">
-          📅 {{ showForm ? 'Back to Chat' : 'Schedule Meeting' }}
-        </button>
       </header>
 
       <main class="centered-content">
-        <app-schedule-form [hidden]="!showForm" (submitForm)="handleFormSubmit($event)"></app-schedule-form>
-        <app-chat #chat [hidden]="showForm"></app-chat>
+        <app-chat #chat></app-chat>
       </main>
     </div>
   `,
@@ -66,24 +61,6 @@ import { ScheduleFormComponent } from './schedule-form/schedule-form';
 
     .sparkle { font-size: 1.4rem; }
 
-    .schedule-btn {
-      background: linear-gradient(135deg, #6366f1, #a855f7);
-      color: white;
-      border: none;
-      padding: 10px 20px;
-      border-radius: 20px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
-    }
-
-    .schedule-btn:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 16px rgba(99, 102, 241, 0.4);
-      filter: brightness(1.1);
-    }
-
     .centered-content {
       flex: 1;
       display: flex;
@@ -102,43 +79,4 @@ import { ScheduleFormComponent } from './schedule-form/schedule-form';
 })
 export class AppComponent {
   @ViewChild('chat') chat!: ChatComponent;
-  showForm = false;
-
-  toggleForm() {
-    this.showForm = !this.showForm;
-  }
-
-  handleFormSubmit(formData: any) {
-    this.showForm = false;
-    // Construct a rich prompt from the form data
-    const attendeeStr = formData.attendees
-      .map((a: any) => `${a.name} [${a.department}] (EID: ${a.id}) (${a.importance})`)
-      .join(', ');
-    
-    const prompt = `[STRUCTURED FORM SUBMISSION] 
-I have all the details for a new meeting:
-Topic: ${formData.subject || 'Meeting'}
-Team: ${formData.team}
-Attendees: ${attendeeStr}
-Date: ${formData.date}
-Time: ${formData.time}
-Timezone: ${formData.timezone}
-Duration: ${formData.duration} minutes
-Recurrence: ${formData.recurrence || 'once'}
-Room: ${formData.room || 'Not specified'}
-Location/Link: ${formData.location || 'Not specified'}
-Presenter: ${formData.presenter || 'Organizer'}
-EID Verification: All IDs provided are pre-verified. Trust them explicitly.
-
-THIS IS A FINAL BOOKING COMMAND. USE THE PROVIDED EIDs DIRECTLY. DO NOT SEARCH.
-If conflict exists, ask only for a new time. 
-If no conflict, provide 3 title options first. Ask agenda only after title selection.`;
-
-    // Wait for chat component to be ready in the next tick
-    setTimeout(() => {
-      if (this.chat) {
-        this.chat.sendAction(prompt);
-      }
-    }, 100);
-  }
 }

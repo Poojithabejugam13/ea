@@ -66,4 +66,19 @@ export class ApiService {
       fingerprint, event_id: eventId
     });
   }
+
+  updateMeeting(payload: {
+    event_id: string;
+    fingerprint?: string;
+    new_start?: string;
+    new_end?: string;
+    new_subject?: string;
+    new_agenda?: string;
+    new_location?: string;
+    new_attendees?: any[];
+    new_recurrence?: string;
+    new_presenter?: string;
+  }): Observable<any> {
+    return this.http.post(`${this.baseUrl}/meetings/update`, payload);
+  }
 }

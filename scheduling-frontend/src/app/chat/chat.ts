@@ -12,6 +12,9 @@ interface Message {
   optionType?: string;
   titledSections?: any;
   existingMeeting?: any;
+  meetingData?: any;
+  candidateOptions?: string[];
+  selectionMap?: Record<string, string>;
   isInteractive?: boolean;
 }
 
@@ -33,6 +36,9 @@ interface Message {
                 </button>
                 <button *ngIf="msg.role === 'assistant' && i > 0" class="regenerate-btn" (click)="regenerate(i)" title="Regenerate response">
                   ↻ Resend
+                </button>
+                <button *ngIf="msg.role === 'assistant' && msg.meetingData" class="edit-btn" (click)="openMeetingEditor(msg.meetingData)" title="Edit meeting">
+                  ✎ Edit Meeting
                 </button>
               </ng-container>
               
@@ -77,7 +83,7 @@ interface Message {
                 <!-- DUPLICATE ACTIONS -->
                 <ng-container *ngIf="msg.optionType === 'duplicate_action'">
                   <div class="dup-grid">
-                    <button class="dup-update" (click)="sendAction('I want to update this meeting with new time or details.')">🔄 Update time / details</button>
+                    <button class="dup-update" (click)="startDuplicateUpdate(msg.existingMeeting)">🔄 Update time / details</button>
                     <button class="dup-del" (click)="deleteDuplicate(msg.existingMeeting)">🗑️ Cancel & delete</button>
                     <button class="dup-new" (click)="sendAction('Book this as a completely new separate meeting, ignore the existing one.')">➕ Book as new separate meeting</button>
                   </div>
@@ -97,6 +103,19 @@ interface Message {
                       </select>
                    </div>
                    <button class="confirm-btn" (click)="confirmAttendees(msg.options || [])">✅ Confirm Attendees</button>
+                </ng-container>
+
+                <!-- ATTENDEE CONFIRMATION WITH DROPDOWN -->
+                <ng-container *ngIf="msg.optionType === 'attendee_confirm'">
+                  <p class="tap-label">Confirm selected person</p>
+                  <div class="attendee-row">
+                    <select [(ngModel)]="confirmCandidateChoice" style="width: 100%;">
+                      <option *ngFor="let c of (msg.candidateOptions || [])" [value]="c">{{c}}</option>
+                    </select>
+                  </div>
+                  <div class="options-grid">
+                    <button class="opt-btn" (click)="confirmSelectedCandidate(msg.selectionMap || {})">Yes, proceed</button>
+                  </div>
                 </ng-container>
 
                 <!-- GENERAL / TIMESLOT / TITLE / AGENDA -->
@@ -135,6 +154,32 @@ interface Message {
           <button class="send-btn" (click)="sendMessage()" [disabled]="!prompt.trim()">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
           </button>
+        </div>
+
+        <div *ngIf="showMeetingEditor" class="editor-overlay">
+          <div class="editor-card">
+            <h3>Edit Meeting</h3>
+            <label>Title</label>
+            <input [(ngModel)]="meetingEdit.subject" type="text">
+            <label>Date</label>
+            <input [(ngModel)]="meetingEdit.date" type="date">
+            <label>Time</label>
+            <input [(ngModel)]="meetingEdit.time" type="time">
+            <label>Duration (minutes)</label>
+            <input [(ngModel)]="meetingEdit.duration" type="number" min="30" step="15">
+            <label>Agenda</label>
+            <textarea [(ngModel)]="meetingEdit.agenda" rows="3"></textarea>
+            <label>Location</label>
+            <input [(ngModel)]="meetingEdit.location" type="text">
+            <label>Presenter</label>
+            <input [(ngModel)]="meetingEdit.presenter" type="text">
+            <label>Recurrence</label>
+            <input [(ngModel)]="meetingEdit.recurrence" type="text">
+            <div class="edit-actions">
+              <button class="cancel-btn" (click)="closeMeetingEditor()">Cancel</button>
+              <button class="save-btn" (click)="saveMeetingEditor()">Save Changes</button>
+            </div>
+          </div>
         </div>
 
       </div>
@@ -250,6 +295,11 @@ interface Message {
     .attendee-row label { display: flex; align-items: center; gap: 10px; cursor: pointer; }
     .attendee-row select { background: #0f172a; border: 1px solid #334155; color: white; padding: 6px; border-radius: 6px; outline: none; }
     .confirm-btn { background: linear-gradient(135deg, #6366f1, #4f46e5); color: white; border: none; border-radius: 8px; padding: 12px 20px; font-weight: 600; cursor: pointer; width: 100%; margin-top: 10px; }
+    .editor-overlay { position: fixed; inset: 0; background: rgba(2,6,23,0.75); display: flex; align-items: center; justify-content: center; z-index: 2000; }
+    .editor-card { width: min(560px, 90vw); background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+    .editor-card h3 { margin: 0 0 8px 0; color: #f8fafc; }
+    .editor-card label { font-size: 0.8rem; color: #94a3b8; }
+    .editor-card textarea, .editor-card input { background: #020617; border: 1px solid #334155; color: #fff; border-radius: 8px; padding: 10px; }
   `]
 })
 export class ChatComponent {
@@ -276,6 +326,9 @@ export class ChatComponent {
   
   // For attendee selection state
   attendeeSelections: {selected: boolean, importance: string}[] = [];
+  confirmCandidateChoice = '';
+  showMeetingEditor = false;
+  meetingEdit: any = {};
 
   sendMessage() {
     if (!this.prompt.trim()) return;
@@ -335,7 +388,8 @@ export class ChatComponent {
         
         const isInteractive = (res.options && res.options.length > 0) || 
                               res.option_type === 'duplicate_action' || 
-                              res.option_type === 'title_and_agenda';
+                              res.option_type === 'title_and_agenda' ||
+                              res.option_type === 'attendee_confirm';
         
         this.messages.push({
           role: 'assistant',
@@ -345,6 +399,9 @@ export class ChatComponent {
           optionType: res.option_type || 'general',
           titledSections: res.titled_sections || {},
           existingMeeting: res.existing_meeting || null,
+          meetingData: res.meeting_data || null,
+          candidateOptions: res.candidate_options || [],
+          selectionMap: res.selection_map || {},
           isInteractive
         });
 
@@ -354,6 +411,9 @@ export class ChatComponent {
              selected: false,
              importance: q.toLowerCase().includes('imp') ? 'required' : 'optional'
            }));
+        }
+        if (res.option_type === 'attendee_confirm') {
+          this.confirmCandidateChoice = (res.candidate_options || [])[0] || '';
         }
 
         this.scrollToBottom();
@@ -370,9 +430,33 @@ export class ChatComponent {
 
   deleteDuplicate(existingMeeting: any) {
     if (!existingMeeting) return;
-    this.api.deleteMeeting(existingMeeting.fingerprint, existingMeeting.event_id).subscribe(() => {
-      this.sendAction("Meeting cancelled and deleted.");
+    const fingerprint = existingMeeting.fingerprint || existingMeeting._fingerprint || '';
+    const eventId = existingMeeting.event_id || '';
+    if (!fingerprint && !eventId) {
+      this.messages.push({ role: 'assistant', content: '❌ Could not find meeting id to delete. Please retry.' });
+      this.scrollToBottom();
+      return;
+    }
+    this.api.deleteMeeting(fingerprint, eventId).subscribe({
+      next: () => this.sendAction(`Meeting cancelled and deleted. event_id=${eventId}; fingerprint=${fingerprint}`),
+      error: (err) => {
+        this.messages.push({ role: 'assistant', content: '❌ Failed to delete meeting: ' + err.message });
+        this.scrollToBottom();
+      }
     });
+  }
+
+  startDuplicateUpdate(existingMeeting: any) {
+    if (!existingMeeting) {
+      this.sendAction('I want to update this meeting with new time or details.');
+      return;
+    }
+    const fingerprint = existingMeeting.fingerprint || existingMeeting._fingerprint || '';
+    const eventId = existingMeeting.event_id || '';
+    this.sendAction(
+      `Please update existing meeting. event_id=${eventId}; fingerprint=${fingerprint}. ` +
+      `I will provide new time/details now.`
+    );
   }
 
   confirmAttendees(options: string[]) {
@@ -384,6 +468,66 @@ export class ChatComponent {
        });
        this.sendAction(lines.join('\n'));
     }
+  }
+
+  confirmSelectedCandidate(selectionMap: Record<string, string>) {
+    const eid = selectionMap[this.confirmCandidateChoice];
+    if (!eid) {
+      this.sendAction('Yes, proceed');
+      return;
+    }
+    this.sendAction(`Select attendee: ${eid}`);
+  }
+
+  openMeetingEditor(meetingData: any) {
+    const start = new Date(meetingData?.start || new Date().toISOString());
+    const end = new Date(meetingData?.end || new Date(start.getTime() + 60 * 60000));
+    const duration = Math.max(30, Math.round((end.getTime() - start.getTime()) / 60000));
+    this.meetingEdit = {
+      event_id: meetingData?.event_id || '',
+      fingerprint: meetingData?.fingerprint || '',
+      subject: meetingData?.subject || '',
+      agenda: meetingData?.agenda || '',
+      location: meetingData?.location || 'Virtual',
+      presenter: meetingData?.presenter || '',
+      recurrence: meetingData?.recurrence || 'none',
+      date: start.toISOString().slice(0, 10),
+      time: `${start.getHours().toString().padStart(2, '0')}:${start.getMinutes().toString().padStart(2, '0')}`,
+      duration,
+    };
+    this.showMeetingEditor = true;
+  }
+
+  closeMeetingEditor() {
+    this.showMeetingEditor = false;
+    this.meetingEdit = {};
+  }
+
+  saveMeetingEditor() {
+    if (!this.meetingEdit?.event_id || !this.meetingEdit?.date || !this.meetingEdit?.time) return;
+    const localStart = new Date(`${this.meetingEdit.date}T${this.meetingEdit.time}:00`);
+    const localEnd = new Date(localStart.getTime() + Number(this.meetingEdit.duration || 60) * 60000);
+    this.api.updateMeeting({
+      event_id: this.meetingEdit.event_id,
+      fingerprint: this.meetingEdit.fingerprint || '',
+      new_start: localStart.toISOString(),
+      new_end: localEnd.toISOString(),
+      new_subject: this.meetingEdit.subject || '',
+      new_agenda: this.meetingEdit.agenda || '',
+      new_location: this.meetingEdit.location || '',
+      new_recurrence: this.meetingEdit.recurrence || 'none',
+      new_presenter: this.meetingEdit.presenter || '',
+    }).subscribe({
+      next: () => {
+        this.closeMeetingEditor();
+        this.messages.push({ role: 'assistant', content: 'Meeting updated successfully.' });
+        this.scrollToBottom();
+      },
+      error: (err) => {
+        this.messages.push({ role: 'assistant', content: '❌ Failed to update meeting: ' + err.message });
+        this.scrollToBottom();
+      }
+    });
   }
 
   formatMessage(text: string) {
@@ -413,6 +557,11 @@ export class ChatComponent {
 
   clearChat() {
     this.messages = [];
+  }
+
+  addAssistantMessage(content: string) {
+    this.messages.push({ role: 'assistant', content });
+    this.scrollToBottom();
   }
 
   private getOrCreateSessionId(): string {

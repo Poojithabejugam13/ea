@@ -288,7 +288,7 @@ class UserRepository:
                 result.append(e)
         return result
 
-    def get_free_slots(self, user_ids: List[str], date_str: str, duration_mins: int) -> List[dict]:
+    def get_free_slots(self, user_ids: List[str], date_str: str, duration_mins: int, buffer_mins: int = 15) -> List[dict]:
         """Find up to 3 mutual free slots on given date for all user_ids.
         Returns list of {"start": ISO, "end": ISO} in UTC.
         """
@@ -314,10 +314,19 @@ class UserRepository:
                 ev_e = _p(ev.end.dateTime)
                 busy[uid].append((ev_s, ev_e))
 
+        def _has_conflict_or_buffer(cs, ce, bs, be) -> bool:
+            # Standard overlap
+            if cs < be and bs < ce:
+                return True
+            # Keep slot suggestions consistent with booking validation:
+            # avoid slots that start too soon after an existing meeting.
+            gap_mins = (cs - be).total_seconds() / 60
+            return 0 <= gap_mins <= buffer_mins
+
         free_slots = []
         for (cs, ce) in candidates:
             if all(
-                not any(cs < be and bs < ce for bs, be in busy.get(uid, []))
+                not any(_has_conflict_or_buffer(cs, ce, bs, be) for bs, be in busy.get(uid, []))
                 for uid in user_ids
             ):
                 free_slots.append({
