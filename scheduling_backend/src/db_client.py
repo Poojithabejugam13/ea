@@ -30,6 +30,7 @@ def _get_connection():
 
 
 def insert_meeting(
+    meeting_id: str,
     organiser_name: str,
     start_date: str,
     end_date: str,
@@ -53,7 +54,6 @@ def insert_meeting(
     -------
     str | None — the generated UUID (as string) on success, None on failure.
     """
-    meeting_id = str(uuid.uuid4())
     participants_json = json.dumps(participants or [])
 
     sql = """
@@ -84,3 +84,106 @@ def insert_meeting(
     except Exception as e:
         print(f"[DB ERROR] Failed to log meeting: {e}")
         return None
+
+
+def update_meeting_db(
+    meeting_id: str,
+    meeting_title: str | None = None,
+    meeting_agenda: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    participants: list[str] | None = None,
+) -> bool:
+    """Update existing meeting in the PostgreSQL DB."""
+    fields = []
+    params = []
+
+    if meeting_title is not None:
+        fields.append("meeting_title = %s")
+        params.append(meeting_title)
+    if meeting_agenda is not None:
+        fields.append("meeting_agenda = %s")
+        params.append(meeting_agenda)
+    if start_date is not None:
+        fields.append("start_date = %s")
+        params.append(start_date)
+    if end_date is not None:
+        fields.append("end_date = %s")
+        params.append(end_date)
+    if participants is not None:
+        fields.append("participants = %s")
+        params.append(json.dumps(participants))
+
+    if not fields:
+        return True
+
+    sql = f"UPDATE meetings SET {', '.join(fields)} WHERE id = %s"
+    params.append(meeting_id)
+
+    try:
+        conn = _get_connection()
+        cur = conn.cursor()
+        cur.execute(sql, tuple(params))
+        conn.commit()
+        cur.close()
+        conn.close()
+        print(f"[DB] Meeting updated → {meeting_id}")
+        return True
+    except Exception as e:
+        print(f"[DB ERROR] Failed to update meeting: {e}")
+        return False
+
+
+def delete_meeting_db(meeting_id: str) -> bool:
+    """Delete meeting from the PostgreSQL DB."""
+    sql = "DELETE FROM meetings WHERE id = %s"
+    try:
+        conn = _get_connection()
+        cur = conn.cursor()
+        cur.execute(sql, (meeting_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        print(f"[DB] Meeting deleted → {meeting_id}")
+        return True
+    except Exception as e:
+        print(f"[DB ERROR] Failed to delete meeting: {e}")
+        return False
+
+def get_user_schedule_db(user_name: str, target_date: str) -> list[dict]:
+    """Fetch meetings from PostgreSQL for a specific user on a specific date."""
+    sql = "SELECT id, meeting_title, start_date, end_date, participants, organiser_name FROM meetings"
+    try:
+        conn = _get_connection()
+        cur = conn.cursor()
+        cur.execute(sql)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        results = []
+        for r in rows:
+            m_id, title, start, end, parts_json, org = r
+            if not start.startswith(target_date):
+                continue
+            try:
+                parts = json.loads(parts_json) if isinstance(parts_json, str) else list(parts_json)
+            except Exception:
+                parts = []
+            
+            # Filter solely for the requested user
+            if user_name == org or user_name in parts:
+                results.append({
+                    "id": m_id,
+                    "subject": title,
+                    "start": start,
+                    "end": end,
+                    "location": "Virtual",
+                    "participants": parts,
+                    "organiser": org,
+                    "is_db": True
+                })
+        return results
+    except Exception as e:
+        print(f"[DB ERROR] Failed to read schedule: {e}")
+        return []

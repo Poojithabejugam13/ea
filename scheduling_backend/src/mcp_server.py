@@ -9,7 +9,7 @@ from .dependencies import get_repo, get_session_mgr
 from .session_manager import SessionManager
 from .models import User, Event, EventTime, AttendeeEntry, EmailAddress, OnlineMeeting
 from .session_manager import SessionManager
-from .db_client import insert_meeting
+from .db_client import insert_meeting, update_meeting_db, delete_meeting_db
 import uuid
 from datetime import datetime, timedelta
 import re
@@ -149,17 +149,71 @@ def get_users_by_team(team_name: str) -> list[dict]:
 def get_user_schedule(user_id: str, date: str) -> list[dict]:
     """Get all calendar events for a user on a given date (YYYY-MM-DD UTC)."""
     _set_live_status("Reading user schedule...")
-    events = get_repo().get_events_on_date(user_id, date)
-    return [
-        {
-            "id": e.id,
-            "subject": e.subject,
-            "start": e.start.dateTime,
-            "end": e.end.dateTime,
-            "location": e.location,
-        }
-        for e in events
-    ]
+    from .dependencies import CALLER_USER_ID
+    from .db_client import get_user_schedule_db
+    caller_id = CALLER_USER_ID.get()
+    caller_is_owner = (caller_id == user_id)
+    
+    caller_user = get_repo().get_user_by_id(caller_id)
+    caller_name = caller_user.displayName if caller_user else ""
+    caller_email = caller_user.mail if caller_user else ""
+
+    target_user = get_repo().get_user_by_id(user_id)
+    if not target_user:
+        return []
+
+    # First try PostgreSQL Database
+    db_events = get_user_schedule_db(target_user.displayName, date)
+    
+    events_to_process = []
+    if db_events:
+        for ev in db_events:
+            events_to_process.append(ev)
+    else:
+        # Fallback to Mock Repo
+        events = get_repo().get_events_on_date(user_id, date)
+        for e in events:
+            events_to_process.append({
+                "id": e.id,
+                "subject": e.subject,
+                "start": e.start.dateTime,
+                "end": e.end.dateTime,
+                "location": e.location,
+                "organiser": getattr(e.organizer, 'address', ''),
+                "participants": [a.userId for a in e.attendees],
+                "is_db": False
+            })
+
+    # Apply privacy mask
+    scrubbed = []
+    for ev in events_to_process:
+        is_authorized = caller_is_owner
+        if not is_authorized:
+            if ev.get("is_db"):
+                # DB stores participants via names
+                is_authorized = (caller_name == ev.get("organiser")) or (caller_name in ev.get("participants", []))
+            else:
+                # Mock Repo stores attendees via user ids in our adaptation
+                is_authorized = (caller_email == ev.get("organiser")) or (caller_id in ev.get("participants", []))
+        
+        if is_authorized:
+            scrubbed.append({
+                "id": ev["id"],
+                "subject": ev["subject"],
+                "start": ev["start"],
+                "end": ev["end"],
+                "location": ev["location"]
+            })
+        else:
+            scrubbed.append({
+                "id": ev["id"],
+                "subject": "Busy",
+                "start": ev["start"],
+                "end": ev["end"],
+                "location": "Private"
+            })
+            
+    return scrubbed
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +279,9 @@ def _resolve_attendees(raw_attendees: list) -> list[dict]:
     Prevents 'string indices must be integers' if LLM sends strings.
     """
     resolved = []
+    if not isinstance(raw_attendees, list):
+        return resolved
+
     for a in raw_attendees:
         if isinstance(a, str):
             # If LLM sent a name string, try to find the user to get their ID
@@ -232,10 +289,17 @@ def _resolve_attendees(raw_attendees: list) -> list[dict]:
             if results:
                 user = results[0]  # Take the best match
                 resolved.append({"id": user.id, "name": user.displayName, "type": "required"})
-            else:
-                continue
-        elif isinstance(a, dict) and "id" in a:
-            resolved.append(a)
+        elif isinstance(a, dict):
+            # Check for alternative ID keys first
+            temp_id = a.get("id") or a.get("eid") or a.get("userId") or a.get("user_id")
+            if temp_id:
+                resolved.append(a)
+            elif "name" in a:
+                # If no ID but name provided, try to resolve the name
+                results = get_repo().search_users(a["name"])
+                if results:
+                    user = results[0]
+                    resolved.append({"id": user.id, "name": user.displayName, "type": a.get("type", "required")})
     return resolved
 
 # ---------------------------------------------------------------------------
@@ -267,7 +331,7 @@ def create_meeting(
     """
     attendees = _resolve_attendees(attendees)
     _set_live_status("Creating meeting...")
-    event_id = f"e_{uuid.uuid4().hex[:8]}"
+    event_id = str(uuid.uuid4())
     join_url = get_repo().make_join_url(event_id)
 
     attendee_entries = []
@@ -340,6 +404,7 @@ def create_meeting(
 
     # ── Persist to PostgreSQL (meetings table) ──────────────────────
     insert_meeting(
+        meeting_id=event_id,
         organiser_name=_get_organiser().displayName,
         start_date=start,
         end_date=end,
@@ -501,6 +566,16 @@ def update_meeting(
         "fingerprint": new_fingerprint,
     })
 
+    # 6. Sync with PostgreSQL
+    update_meeting_db(
+        meeting_id=event_id,
+        meeting_title=subject,
+        meeting_agenda=agenda,
+        start_date=start,
+        end_date=end,
+        participants=all_attendee_names
+    )
+
     return {
         "status": "updated",
         "event_id": event_id,
@@ -540,7 +615,37 @@ def reschedule_meeting(event_id: str, new_start: str, new_end: str) -> dict:
                 ),
             )
 
+    # Sync with PostgreSQL
+    update_meeting_db(
+        meeting_id=event_id,
+        start_date=new_start,
+        end_date=new_end
+    )
+
     return {"status": "rescheduled", "event_id": event_id, "new_start": new_start, "new_end": new_end}
+
+
+# ---------------------------------------------------------------------------
+# Tool: delete_meeting
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def delete_meeting(event_id: str, fingerprint: str = "") -> dict:
+    """Permanently delete a meeting from Calendar, Redis, and Database.
+    Freeing up time slots for all attendees.
+    """
+    _set_live_status("Deleting meeting...")
+    
+    # 1. Remove from Repository (Calendar)
+    get_repo().delete_event(event_id)
+    
+    # 2. Remove from Redis (Duplicate Detection)
+    if fingerprint:
+        get_session_mgr().delete_meeting(fingerprint)
+        
+    # 3. Remove from PostgreSQL
+    delete_meeting_db(event_id)
+    
+    return {"status": "deleted", "event_id": event_id}
 
 
 # ---------------------------------------------------------------------------

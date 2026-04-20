@@ -82,22 +82,29 @@ async def process_agent_request(payload: dict = Body(...)):
     """
     Endpoint for the Streamlit UI to talk to the AI Agent.
     """
+    from .dependencies import CALLER_USER_ID
     prompt = payload.get("prompt", "")
     session_id = payload.get("session_id", "default")
+    user_id = payload.get("user_id", "103")  # Poojitha (Organiser) is the default until MS Teams auth is added
     t0 = time.perf_counter()
-    agent = get_ai_agent()
-    result = agent.process_prompt(prompt, session_id=session_id)
-    elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
-    logging.getLogger("agent.latency").info(
-        "agent/process session=%s elapsed_ms=%s prompt_len=%s intent=%s",
-        session_id,
-        elapsed_ms,
-        len(prompt or ""),
-        result.get("intent", "unknown"),
-    )
-    result["latency_ms"] = elapsed_ms
-    get_session_mgr().clear_status(session_id)
-    return result
+    
+    token = CALLER_USER_ID.set(user_id)
+    try:
+        agent = get_ai_agent()
+        result = agent.process_prompt(prompt, session_id=session_id)
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+        logging.getLogger("agent.latency").info(
+            "agent/process session=%s elapsed_ms=%s prompt_len=%s intent=%s",
+            session_id,
+            elapsed_ms,
+            len(prompt or ""),
+            result.get("intent", "unknown"),
+        )
+        result["latency_ms"] = elapsed_ms
+        get_session_mgr().clear_status(session_id)
+        return result
+    finally:
+        CALLER_USER_ID.reset(token)
 
 
 @app.get("/agent/status")

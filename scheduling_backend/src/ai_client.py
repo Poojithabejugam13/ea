@@ -14,7 +14,7 @@ nest_asyncio.apply()
 from .mcp_server import (
     search_users, get_users_by_team, get_user_schedule,
     get_mutual_free_slots, check_conflict_detail,
-    create_meeting, update_meeting, reschedule_meeting, notify_user,
+    create_meeting, update_meeting, reschedule_meeting, notify_user, delete_meeting,
     set_current_session_id, reset_current_session_id
 )
 from .dependencies import get_session_mgr
@@ -150,7 +150,8 @@ class GeminiAgent:
                 create_meeting, 
                 update_meeting, 
                 reschedule_meeting, 
-                notify_user
+                notify_user,
+                delete_meeting
             ]
         )
         
