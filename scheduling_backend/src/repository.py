@@ -258,10 +258,6 @@ class UserRepository:
             if any(q_norm in n for n in any_norm):
                 results.append((1.0, user))
                 continue
-            # Fuzzy match on name
-            score = max(_fuzzy_score(q_norm, _normalize(f)) for f in fields)
-            if score >= 0.55:
-                results.append((score, user))
 
         results.sort(key=lambda x: -x[0])
         return [u for _, u in results]
@@ -386,7 +382,7 @@ class UserRepository:
         return {"status": "sent", "recipient": recipient}
 
     def make_join_url(self, event_id: str) -> str:
-        return f"https://teams.mock/meet/{event_id}"
+        return f"https://zoom.us/j/{event_id}"
 
     # --- New Suggestion Methods ---
 

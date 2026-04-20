@@ -84,4 +84,4 @@ class GraphAPIClient:
 
     def make_join_url(self, event_id: str) -> str:
         # Real Graph API: isOnlineMeeting=True on event creation returns joinUrl automatically
-        return f"https://teams.microsoft.com/meet/{event_id}"
+        return f"https://zoom.us/j/{event_id}"

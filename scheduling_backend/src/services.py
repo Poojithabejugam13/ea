@@ -11,7 +11,7 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from .repository import UserRepository
-from .mcp_server import create_meeting
+from .mcp_server import create_meeting, get_room_suggestions
 
 
 def calculate_priority(required_count: int, created_at_timestamp: float) -> float:
@@ -56,13 +56,29 @@ class SchedulingService:
 # ---------------------------------------------------------------------------
 
 def extract_options(text: str) -> List[str]:
-    """Extract numbered list items from AI response for UI tap buttons.
-    Skips section header lines like 'Title suggestions:' and 'Agenda suggestions:'.
+    """Extract interactive choices from AI response.
+    Supports:
+    1. Square brackets: [ Option ]
+    2. Numbered lists: 1. Option
     """
     options = []
+    # 1. Try extracting from square brackets first (new preferred style)
+    bracket_matches = re.findall(r'\[\s*(.+?)\s*\]', text)
+    for match in bracket_matches:
+        # Filter out labels like "Text input" or "hide if already given"
+        if any(w in match.lower() for w in ["text input", "hide if", "only show if", "choose one"]):
+            continue
+        # Strip any icons or markers the model might have added
+        clean = re.sub(r'^[^\w\s]+', '', match).strip()
+        if clean and clean not in options:
+            options.append(clean)
+    
+    if options:
+        return options
+
+    # 2. Fallback to numbered lists
     for line in text.split("\n"):
         stripped = line.strip()
-        # Skip pure section headers (no number prefix)
         if re.match(r'^(Title suggestions?|Agenda suggestions?|Title options?|Agenda options?):?\s*$',
                     stripped, re.IGNORECASE):
             continue
@@ -77,57 +93,84 @@ def extract_options(text: str) -> List[str]:
 
 def extract_titled_sections(text: str) -> dict:
     """
-    If the AI response contains 'Title suggestions:' AND 'Agenda suggestions:'
-    sections, return {"titles": [...], "agendas": [...]}.
-    Otherwise returns empty dict.
+    Extracts sections from AI response where a header is followed by a list of 
+    options in square brackets OR a numbered list.
+    Returns: {"Section Name": ["Option 1", "Option 2", ...]}
     """
-    result = {}
-    title_match = re.search(
-        r'Title suggestions?:?\s*\n((?:\s*\d+[.)\]].+\n?)+)',
-        text, re.IGNORECASE
-    )
-    agenda_match = re.search(
-        r'Agenda suggestions?:?\s*\n((?:\s*\d+[.)\]].+\n?)+)',
-        text, re.IGNORECASE
-    )
-    if title_match:
-        block = title_match.group(1)
-        result["titles"] = [
-            m.group(1).strip()
-            for m in re.finditer(r'^\s*\d+[.)\]]\s+(.+)$', block, re.MULTILINE)
-        ]
-    if agenda_match:
-        block = agenda_match.group(1)
-        result["agendas"] = [
-            m.group(1).strip()
-            for m in re.finditer(r'^\s*\d+[.)\]]\s+(.+)$', block, re.MULTILINE)
-        ]
-    return result
+    sections = {}
+    
+    # 1. Look for headers followed by bracketed options [ Choice ]
+    # Pattern: "Header Name\n[ Option 1 ] [ Option 2 ]"
+    # Or: "Header Name:\n[ Option 1 ]\n[ Option 2 ]"
+    lines = text.split("\n")
+    current_section = None
+    
+    for line in lines:
+        stripped = line.strip()
+        if not stripped: continue
+        
+        # Detect Header: "Topic", "Select Time", etc.
+        # Headers usually don't have brackets and end with colon or are just lines
+        is_header = False
+        if re.match(r'^[^\d\[][^\]:]+:?\s*$', stripped) and len(stripped) < 45:
+            is_header = True
+            
+        header_keywords = ["time", "room", "location", "title", "subject", "agenda", "choice", "option"]
+        if any(w in stripped.lower() for w in header_keywords) and "[" not in stripped and not re.match(r'^\d+\.', stripped):
+            is_header = True
+
+        if is_header:
+            header = stripped.rstrip(":").strip()
+            # Ignore common preamble lines
+            if any(w in header.lower() for w in ["here is", "please", "meeting booked", "edit anything"]):
+                current_section = None
+                continue
+            current_section = header
+            sections[current_section] = []
+            continue
+            
+        # Detect Options in current section
+        if current_section:
+            brackets = re.findall(r'\[\s*(.+?)\s*\]', stripped)
+            if brackets:
+                for b in brackets:
+                    if not any(w in b.lower() for w in ["text input", "hide if", "rules"]):
+                        sections[current_section].append(b.strip())
+            
+            # Also catch numbered items if they live under this header
+            m = re.match(r'^\s*\d+[.)\]]\s+(.+)$', stripped)
+            if m:
+                sections[current_section].append(m.group(1).strip())
+
+    # Filter out empty sections
+    return {k: v for k, v in sections.items() if v}
 
 
 def classify_option_type(options: list, text: str) -> str:
     """Classify option type from AI response labels."""
     ctx = text.lower()
-    # Combined title + agenda block (STEP 2 new format)
-    has_title_section = bool(re.search(r'title suggestions?', ctx))
-    has_agenda_section = bool(re.search(r'agenda suggestions?', ctx))
-    if has_title_section and has_agenda_section:
-        return "title_and_agenda"
-    if has_title_section or "title suggestion" in ctx or "choose a meeting title" in ctx:
-        return "title"
-    if has_agenda_section or "choose an agenda" in ctx or ("agenda" in ctx and "tap one" in ctx):
-        return "agenda"
-    if any(w in ctx for w in ["free slot", "here are free slots"]):
+    
+    # New gathering card and confirmation card types
+    if "confirm & book" in ctx:
+        return "gathering_card"
+    if "meeting booked" in ctx:
+        return "scheduled_confirmation"
+    if "edit anything" in ctx or "edit title" in ctx:
+        return "edit_grid"
+
+    # Legacy/Default types
+    if "title suggestion" in ctx: return "title"
+    if "agenda suggestion" in ctx: return "agenda"
+    if any(w in ctx for w in ["free slot", "choose a slot", "select time"]):
         return "timeslot"
-    if any(w in ctx for w in ["select attendee", "please select attendees"]):
+    if "select attendee" in ctx:
         return "attendee"
-    if any(w in ctx for w in ["update time", "cancel", "book as separate", "already booked", "already exists"]):
-        return "duplicate_action"
-    if any(w in ctx for w in ["reschedule", "conflict", "busy", "overlap", "continue"]) and len(options) <= 3:
+    
+    if any(w in ctx for w in ["conflict", "conflicting", "busy", "overlap", "proceed with given time"]):
         return "conflict"
-    if options and any("@" in o or "eid" in o.lower() for o in options):
-        return "attendee"
+    
     return "general"
+
 
 
 def _extract_names_from_prompt(prompt: str) -> list[str]:
@@ -362,9 +405,9 @@ class AIAgent:
             self.gemini = RealGeminiAgent(repository, session_manager)
             self.use_ai = True
         except Exception as e:
-            print(f"Vertex AI init failed: {e}")
-            self.use_ai = False
-
+            # Use ascii() to safely encode the error on Windows terminals (cp1252 chokes on emoji)
+            safe_err = ascii(str(e))
+            print(f"Vertex AI init failed: {safe_err}")
     # ──────────────────────────────────────────────────────────────────────
     # Public entry point
     # ──────────────────────────────────────────────────────────────────────
@@ -486,7 +529,6 @@ class AIAgent:
             return None
         if "team" in low:
             return None
-        # Hard guard: do NOT use single-person fast path if prompt indicates multiple attendees.
         if any(k in low for k in [
             " and ",
             ",",
@@ -504,12 +546,25 @@ class AIAgent:
             name_like = re.findall(r"\b[A-Z][a-z]+\s+[A-Z][a-z]+\b", prompt)
             if len(set(name_like)) >= 2:
                 return None
+            # Check if multiple first names from the user dictionary are found in the prompt
+            organiser = self.repo.get_organiser()
+            organiser_id = organiser.id if organiser else "103"
+            found_attendees = set()
+            for u in self.repo.get_all_users():
+                if u.id == organiser_id:
+                    continue
+                first_name = u.displayName.split()[0].lower()
+                if re.search(rf"\b{first_name}\b", low):
+                    found_attendees.add(u.id)
+            if len(found_attendees) >= 2:
+                return None
 
         organiser = self.repo.get_organiser()
         organiser_id = organiser.id if organiser else "103"
         organiser_dept = (organiser.department or "").strip().lower() if organiser else ""
         extracted_name = ""
-        m_with = re.search(r"\bwith\s+([a-zA-Z][a-zA-Z]+)\b", low)
+        # Improved name extraction: catch "with Radha Krishna", "with Radha", etc.
+        m_with = re.search(r"\bwith\s+([a-zA-Z][a-zA-Z\s]+?)(?:\s+at|\s+on|\s+tomorrow|\s+today|\s+for|\s+at|$)\b", low)
         if m_with:
             extracted_name = m_with.group(1).strip()
 
@@ -548,6 +603,23 @@ class AIAgent:
                     second_name = second.displayName.lower()
                     if top_name in low and second_name not in low:
                         attendee = top
+        if attendee is None and len(fuzzy) > 1:
+            # Return a disambiguation card
+            options = []
+            for u in fuzzy:
+                label = f"Select: {u.displayName} ({u.department}) - EID: {u.id}"
+                options.append(label)
+            
+            return {
+                "response": f"I found multiple people matching your request. Which one did you mean?",
+                "intent": "attendee_disambiguation",
+                "options": options,
+                "option_type": "general",
+                "titled_sections": {
+                    "Matching Users": options
+                },
+            }
+
         if attendee is None:
             return None
 
@@ -569,9 +641,7 @@ class AIAgent:
         date_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", prompt)
         date_str = date_match.group(1) if date_match else today_local.isoformat()
 
-        # Optional time extraction. If not present (or conflicting), auto-pick earliest mutual slot.
-        chosen_start = ""
-        chosen_end = ""
+        # Optional time extraction.
         m_time = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", low)
         if m_time:
             h = int(m_time.group(1))
@@ -584,101 +654,84 @@ class AIAgent:
             local_dt = datetime.fromisoformat(f"{date_str}T{h:02d}:{mm:02d}:00").replace(tzinfo=tz)
             start_utc = local_dt.astimezone(ZoneInfo("UTC"))
             end_utc = start_utc + timedelta(minutes=duration_mins)
-            start_s = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-            end_s = end_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-            has_conflict = bool(self.scheduler.check_conflicts(attendee.id, start_s, end_s) or self.scheduler.check_conflicts(organiser_id, start_s, end_s))
-            if not has_conflict:
-                chosen_start, chosen_end = start_s, end_s
-
-        if not chosen_start:
-            # Try up to 7 days to guarantee immediate booking attempt without extra questions.
-            picked = None
-            for i in range(0, 7):
-                d = (today_local + timedelta(days=i)).isoformat() if not date_match else date_str
-                slots = self.repo.get_free_slots([attendee.id, organiser_id], d, duration_mins)
-                if slots:
-                    picked = slots[0]
-                    break
-                if date_match:
-                    break
-            if not picked:
-                return {
-                    "response": "I could not find a mutual free slot right now. Please share a preferred date.",
-                    "intent": "no_mutual_slot",
-                    "options": [],
-                    "option_type": "general",
-                    "titled_sections": {},
-                }
-            chosen_start, chosen_end = picked["start"], picked["end"]
-
-        topic = _extract_topic_from_prompt(prompt) or "One-on-one meet"
-        subject = f"One-on-one meet with {attendee.displayName}"
-        agenda = self._build_one_on_one_agenda(duration_mins)
-        # If ambiguity exists (same full name OR same first-name token), confirm once.
-        all_users = [u for u in self.repo.get_all_users() if u.id != organiser_id]
-        same_name = [u for u in all_users if u.displayName.strip().lower() == attendee.displayName.strip().lower()]
-        same_first_name = []
-        token_matches = []
-        if extracted_name:
-            same_first_name = [
-                u for u in all_users
-                if u.displayName.strip().lower().startswith(extracted_name.lower() + " ")
-            ]
-            token_matches = [u for u in self.repo.search_users(extracted_name) if u.id != organiser_id]
-        if len(same_name) > 1 or len(same_first_name) > 1 or len(token_matches) > 1:
-            raw_candidates = same_first_name or token_matches or same_name
-            candidates = []
-            seen = set()
-            for c in raw_candidates:
-                if c.id in seen:
-                    continue
-                seen.add(c.id)
-                candidates.append({
-                    "id": c.id,
-                    "name": c.displayName,
-                    "department": c.department,
-                    "email": c.mail,
-                })
-            if not any(str(c.get("id")) == str(attendee.id) for c in candidates):
-                candidates.insert(0, {
-                    "id": attendee.id,
-                    "name": attendee.displayName,
-                    "department": attendee.department,
-                    "email": attendee.mail,
-                })
-            selection_map = {
-                f'{c["name"]} (EID: {c["id"]}) - {c["department"]}': str(c["id"])
-                for c in candidates
-            }
-
-            session_data["pending_single_confirm"] = {
+            chosen_start = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            chosen_end = end_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            
+            # 1:1 Rule - If time IS given, book silently immediately.
+            subject = f"One-on-one meet with {attendee.displayName}"
+            agenda = self._build_one_on_one_agenda(duration_mins)
+            return self._book_from_payload({
                 "attendee_id": attendee.id,
-                "attendee_name": attendee.displayName,
-                "department": attendee.department,
                 "subject": subject,
                 "agenda": agenda,
                 "start": chosen_start,
                 "end": chosen_end,
-                "location": "Virtual",
+                "location": "Virtual", # Silent default, user can edit post-booking
                 "recurrence": "none",
                 "presenter": organiser.displayName if organiser else "",
-                "candidates": candidates,
-            }
-            self.session_mgr.set_session(session_id, session_data)
+            }, session_data, session_id)
+
+        # 1:1 Rule - If time is NOT given, silent resolution of 3 slots + 3 rooms.
+        # Find 3 slots across up to 7 days.
+        all_slots = []
+        for i in range(0, 7):
+            d = (today_local + timedelta(days=i)).isoformat() if not date_match else date_str
+            day_slots = self.repo.get_free_slots([attendee.id, organiser_id], d, duration_mins)
+            all_slots.extend(day_slots)
+            if len(all_slots) >= 3:
+                break
+            if date_match: # If they gave a specific date, don't look beyond it.
+                break
+        
+        top_slots = all_slots[:3]
+        if not top_slots:
             return {
-                "response": (
-                    f'I found multiple matches for "{extracted_name or attendee.displayName}".\n'
-                    f'I selected {attendee.displayName} from {attendee.department} department '
-                    f'(same team preference).\n'
-                    f'Shall I go ahead and book the meeting?'
-                ),
-                "intent": "confirm_attendee_selection",
-                "options": ["Yes, proceed"],
-                "option_type": "attendee_confirm",
-                "candidate_options": list(selection_map.keys()),
-                "selection_map": selection_map,
+                "response": "I could not find any mutual free slots for that period.",
+                "intent": "no_mutual_slot",
+                "options": [],
+                "option_type": "general",
                 "titled_sections": {},
             }
+
+        # Fetch 3 room suggestions for the first slot.
+        first_s = top_slots[0]["start"]
+        first_e = top_slots[0]["end"]
+        room_data = get_room_suggestions(first_s, first_e, participant_count=2)
+        top_rooms = [r["name"] for r in room_data[:2]] + ["🌐 Virtual"]
+
+        formatted_slots = [_format_dt_for_ui(_safe_iso_utc(s["start"])) for s in top_slots]
+        # Map: display label → raw slot dict (for instant resolve in CONFIRM_BOOKING)
+        slot_label_map = {
+            _format_dt_for_ui(_safe_iso_utc(s["start"])): {
+                "start": s["start"],
+                "end": s.get("end", (_safe_iso_utc(s["start"]) + timedelta(minutes=duration_mins)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+            }
+            for s in top_slots
+        }
+        
+        # Save placeholder draft for the booking step
+        session_data["draft_meeting"] = {
+            "attendees": [attendee.id],
+            "topic": f"Catch-up with {attendee.displayName}",
+            "duration": duration_mins,
+            "attendee_id": attendee.id, # For legacy compatibility
+            "initial_slots": formatted_slots,
+            "initial_rooms": top_rooms,
+            "slot_label_map": slot_label_map,
+        }
+        self.session_mgr.set_session(session_id, session_data)
+
+        # Render the card silently - zero questions.
+        return {
+            "response": "",
+            "intent": "gathering_card",
+            "options": formatted_slots + top_rooms + ["✅ Confirm & Book"],
+            "option_type": "gathering_card",
+            "titled_sections": {
+                "🕐 Select Time (choose one)": formatted_slots,
+                "🚪 Select Room (choose one)": top_rooms
+            },
+        }
 
         return self._book_from_payload({
             "attendee_id": attendee.id,
@@ -694,52 +747,17 @@ class AIAgent:
     def process_prompt(self, prompt: str, session_id: str = "default") -> dict:
         self.session_mgr.set_status(session_id, "Processing request...")
         session_data = self.session_mgr.get_session(session_id) or {}
-        pending = session_data.get("pending_single_confirm")
-        if pending:
-            low = prompt.strip().lower()
-            m_select = re.search(r"select attendee:\s*(\d+)", low)
-            if m_select:
-                selected_id = m_select.group(1)
-                selected = next((c for c in (pending.get("candidates") or []) if str(c.get("id")) == selected_id), None)
-                if selected:
-                    pending["attendee_id"] = str(selected.get("id"))
-                    pending["attendee_name"] = selected.get("name", pending.get("attendee_name", "Attendee"))
-                    pending["department"] = selected.get("department", pending.get("department", ""))
-                    pending["subject"] = f'One-on-one meet with {pending["attendee_name"]}'
-                    session_data["pending_single_confirm"] = pending
-                    self.session_mgr.set_session(session_id, session_data)
-                    booked = self._book_from_payload(pending, session_data, session_id)
-                    session_data = self.session_mgr.get_session(session_id) or {}
-                    session_data = self._append_history(session_data, prompt, booked.get("response", ""))
-                    self.session_mgr.set_session(session_id, session_data)
-                    self.session_mgr.set_status(session_id, "Preparing final response...")
-                    return booked
-            if any(x in low for x in ["yes", "proceed", "continue", "book", "ok", "okay"]):
-                booked = self._book_from_payload(pending, session_data, session_id)
-                session_data = self.session_mgr.get_session(session_id) or {}
-                session_data = self._append_history(session_data, prompt, booked.get("response", ""))
-                self.session_mgr.set_session(session_id, session_data)
-                self.session_mgr.set_status(session_id, "Preparing final response...")
-                return booked
-            if any(x in low for x in ["no", "another", "different", "change"]):
-                session_data.pop("pending_single_confirm", None)
-                self.session_mgr.set_session(session_id, session_data)
-                return {
-                    "response": "Okay. Please share the exact person name or EID you want.",
-                    "intent": "awaiting_attendee_confirmation",
-                    "options": [],
-                    "option_type": "general",
-                    "titled_sections": {},
-                }
 
-        single_auto = self._single_person_auto_book(prompt, session_data, session_id)
-        if single_auto is not None:
+        # ── Fast-path 1: deterministic 1:1 booking ───────────────────────
+        one_on_one_result = self._single_person_auto_book(prompt, session_data, session_id)
+        if one_on_one_result is not None:
             session_data = self.session_mgr.get_session(session_id) or {}
-            session_data = self._append_history(session_data, prompt, single_auto.get("response", ""))
+            session_data = self._append_history(session_data, prompt, one_on_one_result.get("response", ""))
             self.session_mgr.set_session(session_id, session_data)
             self.session_mgr.set_status(session_id, "Preparing final response...")
-            return single_auto
-        # Fast deterministic workflow for form-based scheduling to keep latency low.
+            return one_on_one_result
+
+        # ── Fast-path 2: structured form payload ─────────────────────────
         fast_result = self._process_structured_workflow(prompt, session_id)
         if fast_result is not None:
             session_data = self.session_mgr.get_session(session_id) or {}
@@ -749,8 +767,19 @@ class AIAgent:
             return fast_result
 
         if not self.use_ai:
-            return {"response": "Vertex AI not initialized.", "intent": "error",
-                    "options": [], "option_type": "none"}
+            return {
+                "response": (
+                    "I can help you schedule meetings. Try:\n"
+                    "\u2022 \"Schedule a meeting with Anand\"\n"
+                    "\u2022 \"Book sprint planning with the engineering team\"\n"
+                    "\u2022 \"Meet with Rahul and Ram tomorrow at 3pm\"\n\n"
+                    "For anything more specific, the AI assistant is temporarily unavailable."
+                ),
+                "intent": "help",
+                "options": [],
+                "option_type": "general",
+                "is_interactive": False,
+            }
 
         # ── 1. Duplicate check — NO LLM call if match found ────────────────
         duplicate_response = self._check_duplicate(prompt)
@@ -790,6 +819,322 @@ class AIAgent:
         full_history.extend(new_turns)
         self.session_mgr.set_session(session_id, {"history": full_history})
 
+        # ── 7. Try parsing the AI response as structured JSON ──────────────
+        # The new system prompt mandates raw JSON output. If we get it, map it
+        # directly to our card format — no regex required.
+        import json as _json
+        try:
+            # Strip potential markdown code fences just in case
+            clean_json = response_text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+            ai_json = _json.loads(clean_json)
+            response_type = ai_json.get("type", "")
+
+            if response_type == "slot_selection":
+                # 1:1 — LLM returned slot suggestions (fast-path missed this message)
+                rooms = ai_json.get("rooms", [])
+                title = ai_json.get("title", "")
+                agenda = ai_json.get("agenda", "")
+                msg_text = ai_json.get("message", "")
+
+                # Load draft (may have attendees if fast-path partially ran)
+                session_data = self.session_mgr.get_session(session_id) or {}
+                draft = session_data.get("draft_meeting") or {}
+                draft["ai_title"] = title
+                draft["ai_agenda"] = agenda
+
+                # ── Resolve attendee from the prompt if draft has none ──────────
+                draft_attendees = draft.get("attendees", []) or []
+                if not draft_attendees:
+                    # Try name resolution from the current prompt
+                    low = prompt.lower()
+                    organiser = self.repo.get_organiser()
+                    _org_id = organiser.id if organiser else organiser_id
+                    candidates = self.repo.search_users(prompt)
+                    candidates = [u for u in candidates if u.id != _org_id]
+                    if candidates:
+                        draft_attendees = [candidates[0].id]
+                        draft["attendee_id"] = candidates[0].id
+                        draft["attendees"] = draft_attendees
+                        draft["topic"] = f"Catch-up with {candidates[0].displayName}"
+
+                # ── Fetch real slots and build display labels ───────────────────
+                # CRITICAL: use _format_dt_for_ui for BOTH the card display labels
+                # AND the slot_label_map keys so CONFIRM_BOOKING can match them.
+                tz_zone = ZoneInfo(DISPLAY_TIMEZONE)
+                today_dt = datetime.now(tz_zone).date()
+                all_repo_slots: list = []
+                dur = draft.get("duration", 60)
+                for i_day in range(0, 7):
+                    day_str = (today_dt + timedelta(days=i_day)).isoformat()
+                    all_repo_slots.extend(self.repo.get_free_slots(
+                        draft_attendees + [organiser_id], day_str, dur
+                    ))
+
+                if all_repo_slots:
+                    top_slots = all_repo_slots[:3]
+                    display_slots = [_format_dt_for_ui(_safe_iso_utc(s["start"])) for s in top_slots]
+                    slot_label_map = {
+                        _format_dt_for_ui(_safe_iso_utc(s["start"])): {
+                            "start": s["start"],
+                            "end": s.get("end", (_safe_iso_utc(s["start"]) + timedelta(minutes=dur)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+                        }
+                        for s in all_repo_slots
+                    }
+                    # Use the first free slot to filter AVAILABLE rooms only
+                    first_slot = all_repo_slots[0]
+                    first_start = first_slot["start"]
+                    first_end = first_slot.get("end", (_safe_iso_utc(first_slot["start"]) + timedelta(minutes=dur)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+                    available_rooms = self.repo.get_room_suggestions("", start=first_start, end=first_end)
+                    rooms = available_rooms + ["Virtual 🌐"]
+                else:
+                    # Fallback: use AI labels (won't resolve at confirm, but better than nothing)
+                    display_slots = ai_json.get("timeSlots", [])
+                    slot_label_map = {}
+                    rooms = self.repo.get_room_suggestions("") + ["Virtual 🌐"]
+
+                draft["initial_slots"] = display_slots
+                draft["initial_rooms"] = rooms
+                draft["slot_label_map"] = slot_label_map
+                draft["duration"] = dur
+                session_data["draft_meeting"] = draft
+                self.session_mgr.set_session(session_id, session_data)
+
+                return {
+                    "response": msg_text,
+                    "intent": "slot_selection",
+                    "options": display_slots + rooms + ["✅ Confirm & Book"],
+                    "option_type": "gathering_card",
+                    "titled_sections": {
+                        "🕐 Select Time (choose one)": display_slots,
+                        "🚪 Select Room (choose one)": [r for r in rooms if r and r.strip()]
+                    },
+                    "is_interactive": True,
+                }
+
+            elif response_type == "group_selection":
+                # Group meeting — render a single comprehensive gathering card
+                missing = ai_json.get("missing", [])
+                prefilled = ai_json.get("prefilled", {})
+                ai_time_slots = ai_json.get("timeSlots", [])
+                topics = ai_json.get("topics", [])
+                if not topics and "topic" in missing:
+                    topics = self.repo.get_subject_suggestions("")[:3]
+                rooms = ai_json.get("rooms", [])
+                recurrence_opts = ai_json.get("recurrenceOptions", [])
+                participants = ai_json.get("participants", [])
+                msg = ai_json.get("message", "Got it. Select the remaining details.")
+
+                # Ensure "Everyone" is always the last presenter option
+                if "Everyone" not in participants and "Anyone" not in participants:
+                    participants.append("Everyone")
+                else:
+                    # Normalise "Anyone" → "Everyone"
+                    participants = ["Everyone" if p == "Anyone" else p for p in participants]
+                    if "Everyone" not in participants:
+                        participants.append("Everyone")
+
+                session_data = self.session_mgr.get_session(session_id) or {}
+                draft = session_data.get("draft_meeting") or {}
+                draft.update({k: v for k, v in prefilled.items() if v})
+                draft["missing_fields_card"] = missing
+                draft["initial_rooms"] = rooms
+                draft["participants"] = participants
+
+                # ── Build slot_label_map so CONFIRM_BOOKING can resolve labels ──
+                # Prefer real free-slot data; fall back to AI labels
+                slot_label_map: dict = {}
+                display_slots = ai_time_slots
+                if "start" in missing:
+                    organiser = self.repo.get_organiser()
+                    _org_id = organiser.id if organiser else "103"
+                    
+                    attendee_ids = []
+                    for p in participants:
+                        if p in ["Everyone", "Anyone"] or "Organiser" in p:
+                            continue
+                        users = self.repo.search_users(p)
+                        if users:
+                            attendee_ids.append(users[0].id)
+                    
+                    draft["attendees"] = attendee_ids # Store resolved EIDs
+                    
+                    dur = draft.get("duration", 60)
+                    tz = ZoneInfo(DISPLAY_TIMEZONE)
+                    today = datetime.now(tz).date()
+                    all_slots: list = []
+                    for i in range(7):
+                        d = (today + timedelta(days=i)).isoformat()
+                        # Require organiser + matched attendees
+                        all_slots.extend(self.repo.get_free_slots([_org_id] + attendee_ids, d, dur))
+                    
+                    if not all_slots:
+                        # Fallback: just use organiser's free slots if no mutual slots
+                        for i in range(7):
+                            d = (today + timedelta(days=i)).isoformat()
+                            all_slots.extend(self.repo.get_free_slots([_org_id], d, dur))
+
+                    top_slots = all_slots[:3]
+                    if top_slots:
+                        display_slots = [_format_dt_for_ui(_safe_iso_utc(s["start"])) for s in top_slots]
+                        slot_label_map = {
+                            _format_dt_for_ui(_safe_iso_utc(s["start"])): {
+                                "start": s["start"],
+                                "end": s.get("end", (_safe_iso_utc(s["start"]) + timedelta(minutes=dur)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+                            }
+                            for s in all_slots
+                        }
+                    else:
+                        display_slots = ai_time_slots
+
+                draft["initial_slots"] = display_slots
+                draft["slot_label_map"] = slot_label_map
+                
+                # Fetch real available rooms for the first free slot
+                if slot_label_map:
+                    first_key = next(iter(slot_label_map))
+                    room_start = slot_label_map[first_key]["start"]
+                    room_end = slot_label_map[first_key]["end"]
+                    available_rooms = self.repo.get_room_suggestions("", start=room_start, end=room_end)
+                else:
+                    available_rooms = self.repo.get_room_suggestions("")
+                rooms = available_rooms + ["Virtual 🌐"]
+                draft["initial_rooms"] = rooms
+
+                session_data["draft_meeting"] = draft
+                self.session_mgr.set_session(session_id, session_data)
+
+                titled = {}
+                if "topic" in missing:
+                    titled["📝 Topic (type below)"] = ["__INPUT__"]
+                if "start" in missing and display_slots:
+                    titled["🕐 Select Time (choose one)"] = display_slots
+                if "room" in missing and rooms:
+                    titled["🚪 Select Room (choose one)"] = rooms
+                if "presenter" in missing and participants:
+                    titled["🎤 Select Presenter (multi)"] = participants
+                if "recurrence" in missing and recurrence_opts:
+                    titled["🔁 Select Recurrence (choose one)"] = recurrence_opts
+
+                all_options = []
+                for opts in titled.values():
+                    all_options.extend(opts)
+                all_options.append("✅ Confirm & Book")
+
+                return {
+                    "response": msg,
+                    "intent": "group_selection",
+                    "options": all_options,
+                    "option_type": "gathering_card",
+                    "titled_sections": titled,
+                    "is_interactive": True,
+                }
+
+            elif response_type == "room_conflict":
+                msg = ai_json.get("message", "The selected room is unavailable.")
+                rooms = ai_json.get("rooms", [])
+                return {
+                    "response": msg,
+                    "intent": "room_conflict",
+                    "options": rooms,
+                    "option_type": "general",
+                    "titled_sections": {
+                        "🚪 Available Rooms": rooms
+                    },
+                    "is_interactive": True,
+                }
+
+            elif response_type == "disambiguation":
+                msg = ai_json.get("message", "I found multiple people with that name. Which one did you mean?")
+                opts = ai_json.get("options", [])
+                return {
+                    "response": msg,
+                    "intent": "attendee_disambiguation",
+                    "options": opts,
+                    "option_type": "general",
+                    "titled_sections": {
+                        "👥 Matching Users": opts
+                    },
+                    "is_interactive": True,
+                }
+
+            elif response_type == "booked":
+                # Direct booking confirmed
+                participants = ai_json.get("participants", [])
+                join_url = ai_json.get("joinLink", "") or ai_json.get("join_url", "")
+                title = ai_json.get("title", ai_json.get("subject", "Meeting"))
+                agenda = ai_json.get("agenda", "")
+                
+                # Use start/end if available, fallback to 'time'
+                start_iso = ai_json.get("start", ai_json.get("time", ""))
+                end_iso = ai_json.get("end", "")
+                
+                room = ai_json.get("room", ai_json.get("location", "Virtual"))
+                presenter = ai_json.get("presenter", "")
+                recurrence = ai_json.get("recurrence", "One-time")
+
+                try:
+                    start_dt = _safe_iso_utc(start_iso)
+                    time_str = _format_dt_for_ui(start_dt)
+                    if end_iso:
+                        end_dt = _safe_iso_utc(end_iso)
+                        time_str += f" → {_format_dt_for_ui(end_dt)}"
+                except:
+                    time_str = start_iso
+
+                confirm_lines = [
+                    f"✅ **{title}** has been booked!",
+                    f"📅 {time_str}",
+                    f"🚪 {room}",
+                ]
+                if presenter:
+                    confirm_lines.append(f"🎤 Presenter: {presenter}")
+                if recurrence and recurrence.lower() != "one-time":
+                    confirm_lines.append(f"🔁 Recurrence: {recurrence}")
+                if agenda:
+                    confirm_lines.append(f"📋 Agenda: {agenda}")
+
+                session_data = self.session_mgr.get_session(session_id) or {}
+                session_data["last_meeting"] = {
+                    "subject": title, "agenda": agenda,
+                    "start": start_iso, "end": end_iso, "location": room,
+                    "attendees": participants, "join_url": join_url,
+                }
+                session_data.pop("draft_meeting", None)
+                self.session_mgr.set_session(session_id, session_data)
+
+                return {
+                    "response": "\n".join(confirm_lines),
+                    "intent": "meeting_booked",
+                    "options": [],
+                    "option_type": "general",
+                    "titled_sections": {},
+                    "links": [join_url] if join_url else [],
+                    "meeting_data": session_data["last_meeting"],
+                }
+
+            elif response_type == "conflict":
+                # Conflict detected — show alternates + keep-original option
+                msg = ai_json.get("message", "There is a scheduling conflict.")
+                alt_slots = ai_json.get("timeSlots", [])
+                original_time = ai_json.get("originalTime", "")
+                options = alt_slots[:]
+                if ai_json.get("keepOriginal") and original_time:
+                    options.append(f"Proceed with original: {original_time}")
+
+                return {
+                    "response": msg,
+                    "intent": "conflict_detected",
+                    "options": options,
+                    "option_type": "conflict",
+                    "titled_sections": {},
+                    "is_interactive": True,
+                }
+
+        except (_json.JSONDecodeError, AttributeError, KeyError):
+            # Not valid JSON — fall through to legacy regex extraction
+            pass
+
+        # ── 8. Legacy regex-based extraction (fallback) ─────────────────────
         options = extract_options(response_text)
         option_type = classify_option_type(options, response_text)
         titled_sections = extract_titled_sections(response_text)
@@ -819,7 +1164,8 @@ class AIAgent:
                     conflict_ctx.get("duration_mins", 60)
                 )
                 slot_options = [_format_dt_for_ui(_safe_iso_utc(s["start"])) for s in slots]
-                options = slot_options + ["Proceed with given time"]
+                options = slot_options + ["Continue with given time anyway"]
+
             else:
                 options = ["Proceed with given time"]
 
@@ -848,6 +1194,145 @@ class AIAgent:
         lower = p.lower()
         organiser = self.repo.get_organiser()
         organiser_id = organiser.id if organiser else "103"
+
+        # ── [CONFIRM_BOOKING] — fired by 'Confirm & Book' tap on gathering card ─
+        # Format: "[CONFIRM_BOOKING] | 🕐 Select Time (choose one)=Mon 20 Apr ... | 🚪 Select Room (choose one)=Nilgiri..."
+        if lower.startswith("[confirm_booking]"):
+            self.session_mgr.set_status(session_id, "Booking your meeting...")
+            # Parse selections from the payload
+            selections: dict = {}
+            for part in p.split("|"):
+                part = part.strip()
+                if "=" in part and not part.lower().startswith("[confirm"):
+                    key, _, val = part.partition("=")
+                    selections[key.strip()] = val.strip()
+
+            # Resolve time label → ISO start/end
+            chosen_time_label = next((v for k, v in selections.items() if "time" in k.lower()), "")
+            chosen_topic = next((v for k, v in selections.items() if "topic" in k.lower()), "")
+            chosen_room = next((v for k, v in selections.items() if "room" in k.lower()), "Virtual")
+            # Presenter may be multi-select (comma-separated names) or single
+            chosen_presenter = next((v for k, v in selections.items() if "presenter" in k.lower()), "")
+            chosen_recurrence = next((v for k, v in selections.items() if "recurrence" in k.lower()), "none")
+
+            # Match slot label back to ISO datetime — use stored map first
+            start_iso, end_iso = "", ""
+            if draft and chosen_time_label:
+                slot_map = draft.get("slot_label_map", {})
+                if chosen_time_label in slot_map:
+                    start_iso = slot_map[chosen_time_label]["start"]
+                    end_iso   = slot_map[chosen_time_label]["end"]
+                else:
+                    # Fallback: fuzzy rescan of the next 7 days
+                    attendees_to_check = draft.get("attendees") or []
+                    if not attendees_to_check and draft.get("attendee_id"):
+                        attendees_to_check = [draft["attendee_id"]]
+                    
+                    if attendees_to_check:
+                        tz = ZoneInfo(DISPLAY_TIMEZONE)
+                        today = datetime.now(tz).date()
+                        all_slots: list = []
+                        duration = draft.get("duration", 60)
+                        ids_to_check = list(set(attendees_to_check + [organiser_id]))
+                        for i in range(0, 7):
+                            d = (today + timedelta(days=i)).isoformat()
+                            all_slots.extend(self.repo.get_free_slots(ids_to_check, d, duration))
+                        for s in all_slots:
+                            label = _format_dt_for_ui(_safe_iso_utc(s["start"]))
+                            if label == chosen_time_label:
+                                start_iso = s["start"]
+                                end_iso = (_safe_iso_utc(s["start"]) + timedelta(minutes=duration)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                break
+
+            if not start_iso and draft and draft.get("start"):
+                start_iso = draft["start"]
+                # If draft missing end, assume 1 hour duration
+                if draft.get("end"):
+                    end_iso = draft["end"]
+                else:
+                    try:
+                        s_dt = _safe_iso_utc(start_iso)
+                        end_iso = (s_dt + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    except:
+                        end_iso = start_iso
+
+            if not start_iso:
+                return {
+                    "response": "Could not resolve a time slot. Please try again.",
+                    "intent": "error", "options": [], "option_type": "general", "titled_sections": {},
+                }
+
+            # Determine subject and agenda from draft or AI-generated values
+            subject = chosen_topic or (draft or {}).get("ai_title") or (draft or {}).get("topic") or "Meeting"
+            agenda = (draft or {}).get("ai_agenda") or self._build_default_agenda(subject, (draft or {}).get("duration", 60))
+            attendees = (draft or {}).get("attendees", [])
+            if not attendees and (draft or {}).get("attendee_id"):
+                attendees = [(draft or {})["attendee_id"]]
+
+            # Map room name to "Virtual" if needed
+            location = chosen_room if chosen_room else "Virtual"
+            if "virtual" in location.lower() or "🌐" in location:
+                location = "Virtual"
+
+            result = create_meeting(
+                subject=subject,
+                agenda=agenda,
+                location=location,
+                start=start_iso,
+                end=end_iso,
+                attendees=attendees,
+                recurrence=chosen_recurrence.lower() if chosen_recurrence != "none" else "none",
+                presenter=organiser.displayName if not chosen_presenter else chosen_presenter,
+            )
+
+            session_data["last_meeting"] = {
+                "event_id": result.get("event_id", ""),
+                "subject": subject,
+                "agenda": agenda,
+                "start": result.get("start", start_iso),
+                "end": result.get("end", end_iso),
+                "location": result.get("location", location),
+                "attendees": attendees,
+                "join_url": result.get("join_url", ""),
+            }
+            session_data.pop("draft_meeting", None)
+            self.session_mgr.set_session(session_id, session_data)
+
+            try:
+                start_dt = _safe_iso_utc(result.get("start", start_iso))
+                start_fmt = _format_dt_for_ui(start_dt)
+            except:
+                start_fmt = result.get("start", start_iso)
+
+            try:
+                end_dt = _safe_iso_utc(result.get("end", end_iso))
+                end_fmt = _format_dt_for_ui(end_dt)
+            except:
+                end_fmt = result.get("end", end_iso)
+            
+            join_url  = result.get("join_url", "")
+            
+            resp_text = (
+                f'✅ **{subject}** has been booked!\n'
+                f'📅 {start_fmt} → {end_fmt}\n'
+                f'🚪 {location}'
+            )
+            
+            if chosen_presenter:
+                resp_text += f'\n🎤 Presenter: {chosen_presenter}'
+            
+            if agenda:
+                resp_text += f'\n\n📝 **Agenda:**\n{agenda}'
+
+            return {
+                "response": resp_text.strip(),
+                "intent": "meeting_booked",
+                "options": [],
+                "option_type": "general",
+                "titled_sections": {},
+                "links": [join_url] if join_url else [],
+                "meeting_data": session_data["last_meeting"],
+            }
 
         # Deterministic duplicate-update entry point from UI action button.
         if "please update existing meeting" in lower:
@@ -1072,6 +1557,7 @@ class AIAgent:
             }
 
         if draft and lower.startswith("book slot:"):
+            # Existing specific slot booking logic
             self.session_mgr.set_status(session_id, "Updating selected time...")
             raw_choice = p.split(":", 1)[1].strip() if ":" in p else p
             mapped = (draft.get("slot_map") or {}).get(raw_choice, "")
@@ -1157,6 +1643,127 @@ class AIAgent:
                     "presenter": draft.get("presenter", ""),
                 },
             }
+
+        # 1:1 Rule - Handle Slot Selection from gathering card
+        # Matches: "Mon 21 Apr 10:00 AM - 11:00 AM IST" or similar
+        m_card_slot = re.search(r"(\w{3})\s+(\d{1,2})\s+(\w{3})\s+(\d{1,2}:\d{2})\s*(AM|PM)", p, re.IGNORECASE)
+        if draft and m_card_slot and "attendee_id" in draft:
+            # Silently update draft time
+            self.session_mgr.set_status(session_id, "Updating selected time...")
+            # We need to find the ISO time from the formatted string.
+            # Easiest way in this mock: search all available slots for a match.
+            all_slots = []
+            organiser_id = "103"
+            target_id = draft.get("attendee_id")
+            tz = ZoneInfo(DISPLAY_TIMEZONE)
+            today = datetime.now(tz).date()
+            for i in range(0, 7):
+                d = (today + timedelta(days=i)).isoformat()
+                all_slots.extend(self.repo.get_free_slots([target_id, organiser_id], d, draft.get("duration", 60)))
+            
+            chosen_iso = None
+            for s in all_slots:
+                if _format_dt_for_ui(_safe_iso_utc(s["start"])) == p.strip():
+                    chosen_iso = s["start"]
+                    break
+            
+            if chosen_iso:
+                draft["start"] = chosen_iso
+                draft["end"] = (_safe_iso_utc(chosen_iso) + timedelta(minutes=draft.get("duration", 60))).strftime("%Y-%m-%dT%H:%M:%SZ")
+                draft["selected_time_label"] = p.strip()
+                session_data["draft_meeting"] = draft
+                self.session_mgr.set_session(session_id, session_data)
+                
+                # RE-RENDER the card with selection marked
+                slots_marked = [(f"✅ {s}" if s == p.strip() else s) for s in draft.get("initial_slots", [])]
+                rooms_marked = [(f"✅ {r}" if r == draft.get("location") else r) for r in draft.get("initial_rooms", [])]
+                
+                return {
+                    "response": "", # Silent update
+                    "intent": "gathering_card",
+                    "options": slots_marked + rooms_marked + ["✅ Confirm & Book"],
+                    "option_type": "gathering_card",
+                    "titled_sections": {
+                        "🕐 Select Time (choose one)": slots_marked,
+                        "🚪 Select Room (choose one)": rooms_marked
+                    },
+                }
+
+        # 1:1 Rule - Handle Room Selection
+        # Matches: "Nilgiri (4-seater)", "🌐 Virtual", etc.
+        if draft and ("(" in p or "virtual" in lower) and "attendee_id" in draft:
+            # Silently update room
+            self.session_mgr.set_status(session_id, "Updating selected room...")
+            room_name = p.split("(")[0].strip()
+            draft["location"] = room_name
+            session_data["draft_meeting"] = draft
+            self.session_mgr.set_session(session_id, session_data)
+            
+            # RE-RENDER the card with selection marked
+            slots_marked = [(f"✅ {s}" if s == draft.get("selected_time_label") else s) for s in draft.get("initial_slots", [])]
+            rooms_marked = [(f"✅ {r}" if r == room_name else r) for r in draft.get("initial_rooms", [])]
+            
+            return {
+                "response": "", # Silent update
+                "intent": "gathering_card",
+                "options": slots_marked + rooms_marked + ["✅ Confirm & Book"],
+                "option_type": "gathering_card",
+                "titled_sections": {
+                    "🕐 Select Time (choose one)": slots_marked,
+                    "🚪 Select Room (choose one)": rooms_marked
+                },
+            }
+
+        # 1:1 Rule - Final Confirmation
+        if draft and lower == "confirm & book" and "attendee_id" in draft:
+            if not draft.get("start"):
+                return {"response": "Please select a time slot first.", "intent": "missing_selection", "options": [], "option_type": "general", "titled_sections": {}}
+            
+            self.session_mgr.set_status(session_id, "Finalizing 1:1 booking...")
+            subject = draft.get("topic") or "Meeting"
+            agenda = self._build_one_on_one_agenda(draft.get("duration", 60))
+            result = create_meeting(
+                subject=subject,
+                agenda=agenda,
+                location=draft.get("location") or "Virtual",
+                start=draft["start"],
+                end=draft["end"],
+                attendees=[draft["attendee_id"]],
+                recurrence="none",
+                presenter=organiser.displayName if organiser else "",
+            )
+            # Standard post-booking card return
+            session_data["last_meeting"] = {
+                "event_id": result.get("event_id", ""),
+                "subject": subject,
+                "agenda": agenda,
+                "start": result.get("start", draft.get("start", "")),
+                "end": result.get("end", draft.get("end", "")),
+                "location": result.get("location", draft.get("location", "")),
+                "attendees": [draft["attendee_id"]],
+            }
+            session_data.pop("draft_meeting", None)
+            self.session_mgr.set_session(session_id, session_data)
+            return {
+                "response": "Meeting booked successfully.",
+                "intent": "meeting_booked",
+                "options": [],
+                "option_type": "general",
+                "titled_sections": {},
+                "meeting_data": session_data["last_meeting"]
+            }
+
+        if lower.startswith("edit "):
+            last_meeting = session_data.get("last_meeting")
+            if last_meeting:
+                return {
+                    "response": f"Opening the editor for \"{last_meeting.get('subject')}\"...",
+                    "intent": "edit_redirect",
+                    "options": [],
+                    "option_type": "edit_grid",
+                    "meeting_data": last_meeting,
+                    "titled_sections": {},
+                }
 
         if draft and lower.startswith("use title:"):
             self.session_mgr.set_status(session_id, "Preparing agenda options...")
