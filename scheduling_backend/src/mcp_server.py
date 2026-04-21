@@ -577,7 +577,7 @@ def create_meeting(
         "presenter": presenter or _get_organiser().displayName,
         "join_url": join_url,
         "organizer": _get_organiser().displayName,
-        "attendees": [a.emailAddress.name for a in attendee_entries],
+        "attendees": [{"name": a.emailAddress.name, "email": a.emailAddress.address, "id": a.userId} for a in attendee_entries],
     }
 
 
@@ -715,13 +715,14 @@ def update_meeting(
     return {
         "status": "updated",
         "event_id": event_id,
+        "fingerprint": new_fingerprint,
         "new_fingerprint": new_fingerprint,
         "subject": subject,
         "start": start,
         "end": end,
         "recurrence": recurrence,
         "presenter": presenter,
-        "attendees": all_attendee_names,
+        "attendees": [{"name": ae.emailAddress.name, "email": ae.emailAddress.address, "id": ae.userId} for ae in new_entries],
         "join_url": join_url,
     }
 

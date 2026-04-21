@@ -73,7 +73,7 @@ async def add_security_headers(request: Request, call_next):
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: https:; "
-        "connect-src 'self' http://localhost:* ws://localhost:* https://*.googleapis.com;"
+        "connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https://*.googleapis.com;"
     )
     return response
 
@@ -85,13 +85,14 @@ async def process_agent_request(payload: dict = Body(...)):
     from .dependencies import CALLER_USER_ID
     prompt = payload.get("prompt", "")
     session_id = payload.get("session_id", "default")
-    user_id = payload.get("user_id", "103")  # Poojitha (Organiser) is the default until MS Teams auth is added
+    user_id = payload.get("user_id", "103")
+    truncate_history = payload.get("truncate_history")
     t0 = time.perf_counter()
     
     token = CALLER_USER_ID.set(user_id)
     try:
         agent = get_ai_agent()
-        result = agent.process_prompt(prompt, session_id=session_id)
+        result = await agent.process_prompt(prompt, session_id=session_id, truncate_history=truncate_history)
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
         logging.getLogger("agent.latency").info(
             "agent/process session=%s elapsed_ms=%s prompt_len=%s intent=%s",
@@ -103,13 +104,26 @@ async def process_agent_request(payload: dict = Body(...)):
         result["latency_ms"] = elapsed_ms
         get_session_mgr().clear_status(session_id)
         return result
+    except Exception as exc:
+        logging.exception("Error in process_agent_request")
+        get_session_mgr().clear_status(session_id)
+        raise HTTPException(status_code=500, detail=str(exc))
     finally:
         CALLER_USER_ID.reset(token)
 
 
 @app.get("/agent/status")
-async def get_agent_status(session_id: str):
-    return {"message": get_session_mgr().get_status(session_id)}
+async def get_agent_status(session_id: str = "default"):
+    mgr = get_session_mgr()
+    return {"message": mgr.get_status(session_id)}
+
+@app.get("/agent/debug")
+async def get_agent_debug():
+    agent = get_ai_agent()
+    return {
+        "use_ai": agent.use_ai,
+        "init_error": getattr(agent, "init_error", "None")
+    }
 
 @app.post("/agent/check_conflicts")
 async def check_conflicts(payload: dict = Body(...)):

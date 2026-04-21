@@ -262,16 +262,17 @@ def _parse_structured_form(prompt: str) -> dict:
         return {}
 
     labels = [
-        "Topic", "Team", "Attendees", "Date", "Time", "Timezone", "Duration",
+        "Event ID", "Topic", "Team", "Attendees", "Date", "Time", "Timezone", "Duration",
         "Recurrence", "Room", "Location/Link", "Presenter", "EID Verification"
     ]
 
     def grab(label: str) -> str:
-        # Works for both multiline forms and one-line "label: value label: value" payloads.
-        other_labels = [l for l in labels if l != label]
-        lookahead = "|".join(re.escape(l) for l in other_labels)
-        pattern = rf"{re.escape(label)}:\s*(.*?)(?=\s+(?:{lookahead}):|$)"
+        # Support both 'Label: value' and 'label=value' formats
+        pattern = rf"(?:{re.escape(label)}[:=])\s*(.*?)(?=\s*[|,]|$)"
         m = re.search(pattern, prompt, flags=re.IGNORECASE | re.DOTALL)
+        if not m and label == "Event ID":
+            # Try 'eventId' variant
+            m = re.search(r"eventId[=:]\s*(.*?)(?=\s*[|,]|$)", prompt, flags=re.IGNORECASE)
         return m.group(1).strip() if m else ""
 
     attendees_raw = grab("Attendees")
@@ -279,10 +280,12 @@ def _parse_structured_form(prompt: str) -> dict:
     if attendees_raw:
         for part in attendees_raw.split(","):
             eid = re.search(r"EID:\s*(\d+)", part, flags=re.IGNORECASE)
+            email = re.search(r"Email:\s*([\w\.-]+@[\w\.-]+\.\w+)", part, flags=re.IGNORECASE)
             importance = re.search(r"\((required|optional)\)", part, flags=re.IGNORECASE)
             if eid:
                 attendees.append({
                     "id": eid.group(1),
+                    "email": email.group(1) if email else "",
                     "type": (importance.group(1).lower() if importance else "optional"),
                 })
 
@@ -304,6 +307,7 @@ def _parse_structured_form(prompt: str) -> dict:
         "location": grab("Location/Link") or "Virtual",
         "presenter": grab("Presenter") or "Organizer",
         "timezone": tz_s,
+        "event_id": grab("Event ID"),
         "start": "",
         "end": "",
         "auto_pick_time": False,
@@ -319,7 +323,15 @@ def _parse_structured_form(prompt: str) -> dict:
     elif not time_s:
         data["missing_fields"].append("time")
 
-    if date_s and time_s:
+    # Support direct ISO start/end if provided
+    start_direct = grab("start")
+    end_direct = grab("end")
+    if start_direct:
+        data["start"] = start_direct
+    if end_direct:
+        data["end"] = end_direct
+
+    if not data["start"] and date_s and time_s:
         try:
             # Build UTC slot from local date/time + timezone.
             t_norm = time_s
@@ -341,6 +353,10 @@ def _parse_structured_form(prompt: str) -> dict:
             data["time"] = t_norm
         except Exception:
             data["missing_fields"].append("time")
+    
+    # If we have start/end, we are not missing date/time
+    if data["start"]:
+        data["missing_fields"] = [f for f in data["missing_fields"] if f not in ["date", "time"]]
 
     return data
 
@@ -401,13 +417,16 @@ class AIAgent:
         self.repo = repository
         self.session_mgr = session_manager
         self.scheduler = SchedulingService(repository)
+        self.use_ai = False
         try:
             self.gemini = RealGeminiAgent(repository, session_manager)
             self.use_ai = True
+            print("INFO: AIAgent initialized successfully with Gemini.")
         except Exception as e:
             # Use ascii() to safely encode the error on Windows terminals (cp1252 chokes on emoji)
             safe_err = ascii(str(e))
-            print(f"Vertex AI init failed: {safe_err}")
+            print(f"CRITICAL: Vertex AI init failed: {safe_err}")
+            self.init_error = str(e)
     # ──────────────────────────────────────────────────────────────────────
     # Public entry point
     # ──────────────────────────────────────────────────────────────────────
@@ -744,36 +763,27 @@ class AIAgent:
             "presenter": organiser.displayName if organiser else "",
         }, session_data, session_id)
 
-    def process_prompt(self, prompt: str, session_id: str = "default") -> dict:
+    async def process_prompt(self, prompt: str, session_id: str = "default", truncate_history: int = None) -> dict:
         self.session_mgr.set_status(session_id, "Processing request...")
         session_data = self.session_mgr.get_session(session_id) or {}
 
-        # ── Fast-path 1: deterministic 1:1 booking ───────────────────────
-        one_on_one_result = self._single_person_auto_book(prompt, session_data, session_id)
-        if one_on_one_result is not None:
-            session_data = self.session_mgr.get_session(session_id) or {}
-            session_data = self._append_history(session_data, prompt, one_on_one_result.get("response", ""))
-            self.session_mgr.set_session(session_id, session_data)
-            self.session_mgr.set_status(session_id, "Preparing final response...")
-            return one_on_one_result
-
-        # ── Fast-path 2: structured form payload ─────────────────────────
-        fast_result = self._process_structured_workflow(prompt, session_id)
-        if fast_result is not None:
-            session_data = self.session_mgr.get_session(session_id) or {}
-            session_data = self._append_history(session_data, prompt, fast_result.get("response", ""))
-            self.session_mgr.set_session(session_id, session_data)
-            self.session_mgr.set_status(session_id, "Preparing final response...")
-            return fast_result
+        if truncate_history is not None and session_data:
+            # Truncate history to the specified index.
+            history = session_data.get("history", [])
+            if isinstance(history, list):
+                # The frontend index includes the initial greeting, so subtract 1
+                # to get the correct number of items to keep in the backend history.
+                keep_count = max(0, truncate_history - 1)
+                session_data["history"] = history[:keep_count]
+                # Clear draft meeting so old ambiguous state doesn't pollute the edited query
+                session_data.pop("draft_meeting", None)
+                self.session_mgr.set_session(session_id, session_data)
 
         if not self.use_ai:
             return {
                 "response": (
-                    "I can help you schedule meetings. Try:\n"
-                    "\u2022 \"Schedule a meeting with Anand\"\n"
-                    "\u2022 \"Book sprint planning with the engineering team\"\n"
-                    "\u2022 \"Meet with Rahul and Ram tomorrow at 3pm\"\n\n"
-                    "For anything more specific, the AI assistant is temporarily unavailable."
+                    "I can help you schedule meetings.\n\n"
+                    "How can I help you schedule today?"
                 ),
                 "intent": "help",
                 "options": [],
@@ -781,10 +791,41 @@ class AIAgent:
                 "is_interactive": False,
             }
 
-        # ── 1. Duplicate check — NO LLM call if match found ────────────────
-        duplicate_response = self._check_duplicate(prompt)
-        if duplicate_response:
-            return duplicate_response
+        # ── 1.5 Fast-path for structured form submissions (Edit Meeting) ───
+        if _looks_like_structured_payload(prompt):
+            form_data = _parse_structured_form(prompt)
+            if form_data and not form_data.get("missing_fields"):
+                event_id = form_data.get("eventId") or form_data.get("event_id")
+                if event_id and event_id != "N/A":
+                    # This is an update
+                    res = self.gemini.tools["update_meeting"](
+                        event_id=event_id,
+                        subject=form_data["topic"],
+                        start=form_data["start"],
+                        end=form_data["end"],
+                        location=form_data["location"],
+                        attendees=form_data["attendees"],
+                        recurrence=form_data["recurrence"],
+                        presenter=form_data["presenter"]
+                    )
+                    resp_lines = [
+                        "I've updated the meeting details as requested.",
+                        f"✅ **{form_data['topic']}**",
+                        f"📅 {_format_dt_for_ui(_safe_iso_utc(form_data['start']))}",
+                        f"🚪 {form_data.get('location', 'Virtual')}",
+                    ]
+                    if form_data.get('presenter'):
+                        resp_lines.append(f"🎤 Presenter: {form_data['presenter']}")
+                    if form_data.get('recurrence') and form_data['recurrence'] != 'none':
+                        resp_lines.append(f"🔁 Recurrence: {form_data['recurrence']}")
+
+                    return {
+                        "response": "\n".join(resp_lines),
+                        "intent": "meeting_updated",
+                        "options": [],
+                        "option_type": "general",
+                        "meeting_data": res
+                    }
 
         # ── 2. Load full history from Redis ────────────────────────────────
         session_data = self.session_mgr.get_session(session_id)
@@ -802,10 +843,10 @@ class AIAgent:
 
         # ── 5. Call Gemini ─────────────────────────────────────────────────
         try:
-            response_text, updated_context = self.gemini.process_message(
+            response_text, updated_context = await self.gemini.process_message_async(
                 enriched_prompt,
-                context_history,
                 session_id=session_id,
+                truncate_history=truncate_history,
             )
         except Exception as e:
             return {"response": f"Gemini Error: {e}", "intent": "error",
@@ -848,7 +889,7 @@ class AIAgent:
                     # Try name resolution from the current prompt
                     low = prompt.lower()
                     organiser = self.repo.get_organiser()
-                    _org_id = organiser.id if organiser else organiser_id
+                    _org_id = organiser.id if organiser else ORGANISER_ID
                     candidates = self.repo.search_users(prompt)
                     candidates = [u for u in candidates if u.id != _org_id]
                     if candidates:
@@ -867,7 +908,7 @@ class AIAgent:
                 for i_day in range(0, 7):
                     day_str = (today_dt + timedelta(days=i_day)).isoformat()
                     all_repo_slots.extend(self.repo.get_free_slots(
-                        draft_attendees + [organiser_id], day_str, dur
+                        draft_attendees + [ORGANISER_ID], day_str, dur
                     ))
 
                 if all_repo_slots:
@@ -892,8 +933,12 @@ class AIAgent:
                     slot_label_map = {}
                     rooms = self.repo.get_room_suggestions("") + ["Virtual 🌐"]
 
+                # Automatically pick the first room if available
+                first_room = available_rooms[0] if available_rooms else "Virtual 🌐"
+                
                 draft["initial_slots"] = display_slots
-                draft["initial_rooms"] = rooms
+                draft["initial_rooms"] = [first_room]
+                draft["room"] = first_room
                 draft["slot_label_map"] = slot_label_map
                 draft["duration"] = dur
                 session_data["draft_meeting"] = draft
@@ -902,11 +947,10 @@ class AIAgent:
                 return {
                     "response": msg_text,
                     "intent": "slot_selection",
-                    "options": display_slots + rooms + ["✅ Confirm & Book"],
+                    "options": display_slots + ["✅ Confirm & Book"],
                     "option_type": "gathering_card",
                     "titled_sections": {
-                        "🕐 Select Time (choose one)": display_slots,
-                        "🚪 Select Room (choose one)": [r for r in rooms if r and r.strip()]
+                        "🕐 Select Time (choose one)": display_slots
                     },
                     "is_interactive": True,
                 }
@@ -1005,7 +1049,15 @@ class AIAgent:
 
                 titled = {}
                 if "topic" in missing:
-                    titled["📝 Topic (type below)"] = ["__INPUT__"]
+                    unique_topics = []
+                    seen = set()
+                    for t in topics:
+                        if t not in seen:
+                            unique_topics.append(t)
+                            seen.add(t)
+                    if "Other" not in seen:
+                        unique_topics.append("Other")
+                    titled["📝 Topic (choose one)"] = unique_topics
                 if "start" in missing and display_slots:
                     titled["🕐 Select Time (choose one)"] = display_slots
                 if "room" in missing and rooms:
@@ -1045,7 +1097,19 @@ class AIAgent:
 
             elif response_type == "disambiguation":
                 msg = ai_json.get("message", "I found multiple people with that name. Which one did you mean?")
-                opts = ai_json.get("options", [])
+                raw_opts = ai_json.get("options", [])
+                opts = []
+                for o in raw_opts:
+                    if isinstance(o, dict):
+                        # Construct strict string for the frontend parser
+                        name = o.get('name', 'Unknown')
+                        dept = o.get('department', '')
+                        email = o.get('email', '')
+                        eid = o.get('eid', o.get('id', ''))
+                        opts.append(f"Select: {name} ({dept}) - Email: {email} - EID: {eid}")
+                    else:
+                        opts.append(str(o))
+                
                 return {
                     "response": msg,
                     "intent": "attendee_disambiguation",
@@ -1057,9 +1121,83 @@ class AIAgent:
                     "is_interactive": True,
                 }
 
+            elif response_type == "draft_review":
+                # User wants a final check before booking
+                participants_raw = ai_json.get("participants", [])
+                participants = []
+                attendee_ids = []
+                for p in participants_raw:
+                    if isinstance(p, dict):
+                        participants.append(p.get("name", "Unknown"))
+                        attendee_ids.append(str(p.get("id", "")))
+                    else:
+                        participants.append(str(p))
+                
+                title = ai_json.get("title", ai_json.get("subject", "Meeting"))
+                agenda = ai_json.get("agenda", "")
+                start_iso = ai_json.get("start", ai_json.get("time", ""))
+                end_iso = ai_json.get("end", "")
+                room = ai_json.get("room", ai_json.get("location", "Virtual"))
+                presenter = ai_json.get("presenter", "")
+                recurrence = ai_json.get("recurrence", "One-time")
+
+                try:
+                    start_dt = _safe_iso_utc(start_iso)
+                    time_str = _format_dt_for_ui(start_dt)
+                    if end_iso:
+                        end_dt = _safe_iso_utc(end_iso)
+                        time_str += f" → {_format_dt_for_ui(end_dt)}"
+                except:
+                    time_str = start_iso
+
+                confirm_lines = [
+                    f"📝 **Draft: {title}**",
+                    f"📅 {time_str}",
+                    f"🚪 {room}",
+                ]
+                if presenter:
+                    confirm_lines.append(f"🎤 Presenter: {presenter}")
+                if recurrence and recurrence.lower() != "one-time":
+                    confirm_lines.append(f"🔁 Recurrence: {recurrence}")
+                if agenda:
+                    confirm_lines.append(f"📋 Agenda: {agenda}")
+
+                session_data = self.session_mgr.get_session(session_id) or {}
+                session_data["last_meeting"] = {
+                    "subject": title, "agenda": agenda,
+                    "start": start_iso, "end": end_iso, "location": room,
+                    "attendees": participants,
+                    "event_id": "",
+                    "fingerprint": "",
+                    "attendee_ids": attendee_ids,
+                    "presenter": presenter,
+                    "recurrence": recurrence
+                }
+                self.session_mgr.set_session(session_id, session_data)
+
+                return {
+                    "response": "\n".join(confirm_lines),
+                    "intent": "draft_review",
+                    "options": ["Edit Details", "Proceed with booking"],
+                    "option_type": "edit_grid",
+                    "titled_sections": {},
+                    "meeting_data": session_data["last_meeting"],
+                }
+
             elif response_type == "booked":
                 # Direct booking confirmed
-                participants = ai_json.get("participants", [])
+                participants_raw = ai_json.get("participants", [])
+                participants = []
+                attendee_ids = []
+                for p in participants_raw:
+                    if isinstance(p, dict):
+                        participants.append(p.get("name", "Unknown"))
+                        attendee_ids.append(str(p.get("id", "")))
+                    else:
+                        participants.append(str(p))
+                
+                if not attendee_ids:
+                    attendee_ids = ai_json.get("attendee_ids", [])
                 join_url = ai_json.get("joinLink", "") or ai_json.get("join_url", "")
                 title = ai_json.get("title", ai_json.get("subject", "Meeting"))
                 agenda = ai_json.get("agenda", "")
@@ -1098,6 +1236,11 @@ class AIAgent:
                     "subject": title, "agenda": agenda,
                     "start": start_iso, "end": end_iso, "location": room,
                     "attendees": participants, "join_url": join_url,
+                    "event_id": ai_json.get("event_id", ""),
+                    "fingerprint": ai_json.get("fingerprint", ""),
+                    "attendee_ids": attendee_ids,
+                    "presenter": presenter,
+                    "recurrence": recurrence
                 }
                 session_data.pop("draft_meeting", None)
                 self.session_mgr.set_session(session_id, session_data)

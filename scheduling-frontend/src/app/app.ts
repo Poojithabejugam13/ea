@@ -26,54 +26,27 @@ import { ChatComponent } from './chat/chat';
       width: 100vw;
       display: flex;
       flex-direction: column;
-      background: #020617;
-      color: #f8fafc;
-      font-family: 'Inter', sans-serif;
+      background: #ffffff;
+      color: #171717;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
 
     .top-nav {
-      height: 70px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 0 40px;
-      border-bottom: 1px solid #1e293b;
-      background: rgba(15, 23, 42, 0.8);
-      backdrop-filter: blur(12px);
-      z-index: 100;
+      display: none;
     }
-
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-
-    .brand h1 {
-      font-size: 1.25rem;
-      font-weight: 700;
-      letter-spacing: -0.025em;
-      margin: 0;
-      background: linear-gradient(to right, #818cf8, #c084fc);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
-
-    .sparkle { font-size: 1.4rem; }
 
     .centered-content {
       flex: 1;
       display: flex;
       justify-content: center;
-      padding: 30px 20px;
-      overflow-y: auto;
+      padding: 0;
+      overflow: hidden;
     }
 
     app-chat, app-schedule-form {
       width: 100%;
-      max-width: 680px;
-      height: fit-content;
-      min-height: min-content;
+      height: 100%;
+      max-width: 100%;
     }
   `]
 })

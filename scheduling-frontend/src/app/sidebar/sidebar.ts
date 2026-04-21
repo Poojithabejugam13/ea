@@ -64,21 +64,21 @@ import { ApiService } from '../api';
     </div>
   `,
   styles: [`
-    .sidebar { width: 320px; background: #0f172a; padding: 20px; color: #e2e8f0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; border-right: 1px solid #1e293b; }
-    h2 { font-size: 1.2rem; font-weight: 600; margin: 0; }
-    hr { border: 0; border-top: 1px solid #1e293b; width: 100%; margin: 0; }
-    .organiser-badge { background: #064e3b; color: #34d399; padding: 10px; border-radius: 8px; font-size: 0.9rem; }
+    .sidebar { width: 320px; background: #f8fafc; padding: 20px; color: #0f172a; height: 100vh; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; border-right: 1px solid #e2e8f0; }
+    h2 { font-size: 1.2rem; font-weight: 600; margin: 0; color: #1e293b; }
+    hr { border: 0; border-top: 1px solid #e2e8f0; width: 100%; margin: 0; }
+    .organiser-badge { background: #d1fae5; color: #065f46; padding: 10px; border-radius: 8px; font-size: 0.9rem; }
     .subtitle { color: #64748b; font-size: 0.8rem; margin: 0 0 15px 0; }
-    label { display: flex; flex-direction: column; font-size: 0.9rem; gap: 5px; margin-bottom: 15px; }
-    select, input { padding: 8px; border-radius: 6px; background: #1e293b; border: 1px solid #334155; color: #e2e8f0; }
-    .save-btn { background: #334155; border: 1px solid #475569; color: white; padding: 10px; border-radius: 6px; cursor: pointer; transition: 0.2s; width: 100%; font-weight: 600; }
-    .save-btn:hover { background: #475569; }
-    .success-msg { color: #34d399; font-size: 0.85rem; margin-top: 5px; text-align: center; }
-    .info-section { background: rgba(59, 130, 246, 0.1); border-left: 3px solid #3b82f6; padding: 15px; font-size: 0.85rem; border-radius: 0 8px 8px 0; }
-    .meeting-card { background: #1e293b; padding: 10px; border-radius: 8px; margin-bottom: 10px; }
-    .meeting-meta { font-size: 0.8rem; color: #94a3b8; margin-top: 5px; }
-    .clear-btn { background: #7f1d1d; color: white; border: none; padding: 12px; border-radius: 6px; cursor: pointer; font-weight: 600; margin-top: auto; }
-    .clear-btn:hover { background: #991b1b; }
+    label { display: flex; flex-direction: column; font-size: 0.9rem; gap: 5px; margin-bottom: 15px; color: #334155; }
+    select, input { padding: 8px; border-radius: 6px; background: #ffffff; border: 1px solid #cbd5e1; color: #0f172a; }
+    .save-btn { background: #e2e8f0; border: 1px solid #cbd5e1; color: #334155; padding: 10px; border-radius: 6px; cursor: pointer; transition: 0.2s; width: 100%; font-weight: 600; }
+    .save-btn:hover { background: #cbd5e1; }
+    .success-msg { color: #059669; font-size: 0.85rem; margin-top: 5px; text-align: center; }
+    .info-section { background: rgba(59, 130, 246, 0.05); border-left: 3px solid #3b82f6; padding: 15px; font-size: 0.85rem; border-radius: 0 8px 8px 0; color: #334155; }
+    .meeting-card { background: #ffffff; padding: 10px; border-radius: 8px; margin-bottom: 10px; border: 1px solid #e2e8f0; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+    .meeting-meta { font-size: 0.8rem; color: #64748b; margin-top: 5px; }
+    .clear-btn { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; padding: 12px; border-radius: 6px; cursor: pointer; font-weight: 600; margin-top: auto; }
+    .clear-btn:hover { background: #fecaca; }
     .empty-msg { color: #64748b; font-size: 0.85rem; }
   `]
 })

@@ -2,6 +2,7 @@ import { Component, ChangeDetectorRef, ViewChild, ElementRef, inject } from '@an
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../api';
+import { ScheduleFormComponent } from '../schedule-form/schedule-form';
 import { interval, Subscription, Subject, map, debounceTime, distinctUntilChanged, switchMap, forkJoin, of } from 'rxjs';
 
 interface Message {
@@ -17,6 +18,7 @@ interface Message {
   selectionMap?: Record<string, string>;
   isInteractive?: boolean;
   intent?: string;
+  finalSelections?: Record<string, string>;
 }
 
 interface DisambigPerson {
@@ -24,20 +26,20 @@ interface DisambigPerson {
   name: string;
   dept: string;
   eid: string;
+  email?: string;
   selected: boolean;
 }
 
 @Component({
   selector: 'app-chat',
   standalone: true,
-  imports: [CommonModule, FormsModule],
-  styleUrl: './chat.css',
+  imports: [CommonModule, FormsModule, ScheduleFormComponent],
   template: `
     <div class="chat-wrapper">
       <div class="chat-container">
         
         <div class="messages" #scrollContainer>
-          <div *ngFor="let msg of messages; let i = index" class="message-row">
+          <div *ngFor="let msg of messages; let i = index" class="message-row" [class.user-row]="msg.role === 'user'">
             <div [class]="msg.role === 'user' ? 'msg user-msg' : 'msg assistant-msg'">
               <ng-container *ngIf="editingIndex !== i; else editTpl">
                 <div class="msg-content" [innerHTML]="formatMessage(msg.content)"></div>
@@ -68,8 +70,8 @@ interface DisambigPerson {
                 <a [href]="link" target="_blank">{{link}}</a>
               </div>
 
-              <!-- Interactive Sections (last assistant message only) -->
-              <div *ngIf="msg.isInteractive && i === messages.length - 1" class="interactive-area">
+              <!-- Interactive Sections -->
+              <div *ngIf="msg.isInteractive" class="interactive-area" [class.past-card]="i !== messages.length - 1">
                 
                 <!-- GATHERING CARD: 1:1 slot_selection and group_selection -->
                 <div *ngIf="msg.optionType === 'gathering_card'" class="card-wrapper">
@@ -77,36 +79,51 @@ interface DisambigPerson {
                     <div class="section-container">
                       <p class="section-header">{{ section }}</p>
 
-                      <!-- MULTI-SELECT presenter section -->
-                      <ng-container *ngIf="isMultiSection(section)">
-                        <div class="multi-chip-area">
-                          <button
-                            *ngFor="let opt of filterOpts(msg.titledSections[section])"
-                            class="chip-btn"
-                            [class.chip-selected]="isChipSelected(section, opt)"
-                            (click)="onChipToggle(section, opt, msg)"
-                          >
-                            <span class="chip-check" *ngIf="isChipSelected(section, opt)">✓</span>
+                      <!-- DROPDOWN: Single-select topics/presenters -->
+                      <ng-container *ngIf="(section.toLowerCase().includes('presenter') || section.toLowerCase().includes('participant') || section.toLowerCase().includes('topic')) && !section.toLowerCase().includes('(multi)')">
+                        <select
+                          class="copilot-select"
+                          (change)="onDropdownChange(section, $event)"
+                          [value]="msg.finalSelections?.[section] || cardSelections[section] || ''"
+                          [disabled]="i !== messages.length - 1"
+                        >
+                          <option value="" disabled selected>Select {{ section.toLowerCase().includes('topic') ? 'Topic' : 'Presenter' }}</option>
+                          <option *ngFor="let opt of filterOpts(msg.titledSections[section])" [value]="cleanOpt(opt)">
                             {{ cleanOpt(opt) }}
-                          </button>
-                        </div>
-                        <p class="multi-hint">Select one or more · tap Everyone to let any participant present</p>
+                          </option>
+                        </select>
                       </ng-container>
 
-                      <!-- SINGLE-SELECT radio-ring buttons -->
-                      <ng-container *ngIf="!isMultiSection(section) && !isTextSection(section)">
+                      <!-- MULTI-SELECT or RADIO: Buttons -->
+                      <ng-container *ngIf="(!section.toLowerCase().includes('presenter') && !section.toLowerCase().includes('participant') && !section.toLowerCase().includes('topic') && !isTextSection(section)) || section.toLowerCase().includes('(multi)')">
                         <div class="stacked-buttons">
                           <button 
                             *ngFor="let opt of filterOpts(msg.titledSections[section])" 
                             class="choice-btn"
-                            [class.selected]="opt.startsWith('✅')"
-                            (click)="onCardTap(section, opt, msg)"
+                            [class.selected]="isChipSelected(section, opt) || msg.finalSelections?.[section]?.includes(cleanOpt(opt)) || cardSelections[section]?.includes(cleanOpt(opt)) || opt.startsWith('✅')"
+                            [disabled]="i !== messages.length - 1 || loading || !!msg.finalSelections"
+                            (click)="section.toLowerCase().includes('(multi)') ? onChipToggle(section, opt, msg) : onCardTap(section, opt, msg)"
                           >
-                            <span class="radio-ring">
-                              <span class="radio-dot" *ngIf="opt.startsWith('✅')"></span>
-                            </span>
+                            <div class="radio-ring" *ngIf="!section.toLowerCase().includes('(multi)')">
+                              <div class="radio-dot" *ngIf="cardSelections[section] ? cardSelections[section] === cleanOpt(opt) : opt.startsWith('✅')"></div>
+                            </div>
+                            <div class="checkbox" *ngIf="section.toLowerCase().includes('(multi)')" [class.checked]="isChipSelected(section, opt) || msg.finalSelections?.[section]?.includes(cleanOpt(opt)) || cardSelections[section]?.includes(cleanOpt(opt)) || opt.startsWith('✅')">
+                              <span *ngIf="isChipSelected(section, opt) || msg.finalSelections?.[section]?.includes(cleanOpt(opt)) || cardSelections[section]?.includes(cleanOpt(opt)) || opt.startsWith('✅')">✓</span>
+                            </div>
                             <span class="btn-label">{{ cleanOpt(opt) }}</span>
                           </button>
+                        </div>
+                        
+                        <!-- Manual Topic Input if 'Other' is selected -->
+                        <div *ngIf="section.toLowerCase().includes('topic') && (msg.finalSelections?.[section] === 'Other' || cardSelections[section] === 'Other' || hasOtherSelected(msg.titledSections[section]))" class="text-input-area mt-2" style="margin-top: 10px;">
+                          <input 
+                            type="text" 
+                            class="card-text-input" 
+                            placeholder="Type topic here..." 
+                            [value]="msg.finalSelections?.['topicOtherText'] || topicOtherText"
+                            (input)="onTopicOtherInput($event)"
+                            [disabled]="i !== messages.length - 1 || loading || !!msg.finalSelections"
+                          >
                         </div>
                       </ng-container>
 
@@ -117,8 +134,9 @@ interface DisambigPerson {
                             type="text" 
                             class="card-text-input" 
                             placeholder="Type here..." 
-                            [value]="cardSelections[section] || ''"
+                            [value]="msg.finalSelections?.[section] || cardSelections[section] || ''"
                             (input)="onTextInput(section, $event)"
+                            [disabled]="i !== messages.length - 1 || loading || !!msg.finalSelections"
                           >
                         </div>
                       </ng-container>
@@ -127,10 +145,10 @@ interface DisambigPerson {
                   </ng-container>
 
                   <!-- Confirm & Book (disabled until all sections have a selection) -->
-                  <div class="confirm-row">
+                  <div class="confirm-row" *ngIf="i === messages.length - 1">
                     <button 
                       class="confirm-btn" 
-                      [disabled]="!isGatheringComplete(msg)"
+                      [disabled]="!isGatheringComplete(msg) || loading || !!msg.finalSelections"
                       (click)="onConfirmCard(msg)"
                     >
                       ✅ Confirm & Book
@@ -146,6 +164,7 @@ interface DisambigPerson {
                       *ngFor="let opt of (msg.options || [])" 
                       class="choice-btn"
                       [class.proceed-btn]="opt.startsWith('Proceed with original')"
+                      [disabled]="i !== messages.length - 1 || loading"
                       (click)="onConflictTap(opt)"
                     >
                       {{ opt }}
@@ -158,6 +177,7 @@ interface DisambigPerson {
                   <button 
                     *ngFor="let opt of msg.options" 
                     class="edit-btn"
+                    [disabled]="i !== messages.length - 1 || loading"
                     (click)="handleEditTapped(opt, msg.meetingData)"
                   >
                     {{ opt }}
@@ -168,32 +188,32 @@ interface DisambigPerson {
                 <div *ngIf="msg.intent === 'attendee_disambiguation' || msg.optionType === 'attendee_disambiguation'" class="disambig-card">
                   <div class="disambig-header">
                     <span class="disambig-title">👥 Select Attendee</span>
-                    <button class="toggle-mode-btn" (click)="toggleDisambigMode()">
-                      {{ disambigBulkMode ? '☑ Bulk Mode' : '◻ Single Mode' }}
-                    </button>
                   </div>
-                  <div class="disambig-grid">
-                    <button
+                  <div class="disambig-list">
+                    <div
                       *ngFor="let p of getDisambigPeople(msg.options || [])"
-                      class="person-card"
-                      [class.person-selected]="isPersonSelected(p)"
-                      (click)="onPersonTap(p, msg)"
+                      class="person-row"
+                      [class.selected]="isPersonSelected(p)"
+                      (click)="onPersonTap(p, msg, i)"
                     >
-                      <div class="person-avatar">{{ p.name.charAt(0) }}</div>
-                      <div class="person-info">
+                      <div class="person-details">
                         <span class="person-name">{{ p.name }}</span>
-                        <span class="person-dept">{{ p.dept }}</span>
-                        <span class="person-eid">EID {{ p.eid }}</span>
+                        <div class="person-meta">
+                          <span>{{ p.dept }} • EID: {{ p.eid }}</span>
+                          <span *ngIf="p.email" class="person-email">📧 {{ p.email }}</span>
+                        </div>
                       </div>
-                      <div *ngIf="isPersonSelected(p)" class="person-check">✓</div>
-                    </button>
+                      <div class="checkbox" [class.checked]="isPersonSelected(p)">
+                        <span *ngIf="isPersonSelected(p)">✓</span>
+                      </div>
+                    </div>
                   </div>
                   <button
                     class="disambig-confirm-btn"
-                    [disabled]="selectedDisambigPeople.size === 0"
+                    [disabled]="selectedDisambigPeople.size === 0 || loading || i !== messages.length - 1"
                     (click)="confirmDisambig(msg)"
                   >
-                    {{ disambigBulkMode ? 'Add Selected (' + selectedDisambigPeople.size + ')' : 'Confirm Selection' }}
+                    Confirm Selection ({{selectedDisambigPeople.size}})
                   </button>
                 </div>
 
@@ -202,6 +222,7 @@ interface DisambigPerson {
                   <button 
                     *ngFor="let opt of msg.options" 
                     class="choice-btn"
+                    [disabled]="i !== messages.length - 1 || loading"
                     (click)="sendAction(opt)"
                   >
                     {{ opt }}
@@ -230,42 +251,36 @@ interface DisambigPerson {
         </div>
 
         <div class="input-area">
-          <input 
-            type="text" 
-            [(ngModel)]="prompt" 
-            (keyup.enter)="sendMessage()" 
-            placeholder="Type your response here..."
-          >
-          <button class="send-btn" (click)="sendMessage()" [disabled]="!prompt.trim()">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-          </button>
+          <div class="input-wrapper">
+            <input 
+              type="text" 
+              [(ngModel)]="prompt" 
+              (keyup.enter)="sendMessage()" 
+              placeholder="Message ARIA..."
+            >
+            <button class="send-btn" (click)="sendMessage()" [disabled]="loading">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         <div *ngIf="showMeetingEditor" class="editor-overlay">
-          <div class="editor-card" [style.transform]="'translate(' + dragX + 'px, ' + dragY + 'px)'">
-            <h3 (mousedown)="onDragStart($event)" 
+          <div class="popup-wrapper" [style.transform]="'translate(' + dragX + 'px, ' + dragY + 'px)'">
+            <div class="drag-handle" 
+                (mousedown)="onDragStart($event)" 
                 (document:mousemove)="onDrag($event)" 
-                (document:mouseup)="onDragEnd()"
-                style="cursor: move;">Edit Meeting</h3>
-            <label>Title</label>
-            <input [(ngModel)]="meetingEdit.subject" type="text">
-            <label>Date</label>
-            <input [(ngModel)]="meetingEdit.date" type="date">
-            <label>Time</label>
-            <input [(ngModel)]="meetingEdit.time" type="time">
-            <label>Duration (minutes)</label>
-            <input [(ngModel)]="meetingEdit.duration" type="number" min="30" step="15">
-            <label>Agenda</label>
-            <textarea [(ngModel)]="meetingEdit.agenda" rows="3"></textarea>
-            <label>Location</label>
-            <input [(ngModel)]="meetingEdit.location" type="text">
-            <label>Presenter</label>
-            <input [(ngModel)]="meetingEdit.presenter" type="text">
-            <label>Recurrence</label>
-            <input [(ngModel)]="meetingEdit.recurrence" type="text">
-            <div class="edit-actions">
-              <button class="cancel-btn" (click)="closeMeetingEditor()">Cancel</button>
-              <button class="save-btn" (click)="saveMeetingEditor()">Save Changes</button>
+                (document:mouseup)="onDragEnd()">
+               <span>≡ Drag to move</span>
+               <button class="close-popup-btn" (click)="closeMeetingEditor()">×</button>
+            </div>
+            <div class="scrollable-form">
+              <app-schedule-form 
+                [prefillData]="meetingEdit" 
+                [updateMode]="true"
+                (submitForm)="onScheduleFormSubmit($event)">
+              </app-schedule-form>
             </div>
           </div>
         </div>
@@ -274,55 +289,69 @@ interface DisambigPerson {
     </div>
   `,
   styles: [`
-    .chat-wrapper { flex: 1; display: flex; justify-content: center; background: #020617; color: #f8fafc; height: 100%; overflow: hidden; }
+    .chat-wrapper { flex: 1; display: flex; justify-content: center; background: #f5f5f5; color: #242424; height: 100%; overflow: hidden; font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif; }
+
     .chat-container { width: 100%; max-width: 800px; display: flex; flex-direction: column; height: 100%; }
     .messages { flex: 1; overflow-y: auto; padding: 30px 20px; display: flex; flex-direction: column; gap: 20px; scroll-behavior: smooth;}
-    .message-row { display: flex; flex-direction: column; width: 100%; }
-    .msg { padding: 12px 18px; border-radius: 12px; max-width: 85%; font-size: 0.95rem; line-height: 1.5; white-space: pre-wrap; position: relative; }
-    .user-msg { background: #1e293b; color: #f1f5f9; align-self: flex-end; border-bottom-right-radius: 2px; }
-    .assistant-msg { background: rgba(30, 41, 59, 0.5); border: 1px solid rgba(255, 255, 255, 0.05); color: #cbd5e1; align-self: flex-start; max-width: 85%; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+    .message-row { display: flex; gap: 12px; width: 100%; }
+    .user-row { justify-content: flex-end; }
+    .msg { padding: 12px 16px; max-width: 95%; font-size: 0.95rem; line-height: 1.5; white-space: pre-wrap; position: relative; }
+    .user-msg { background: #e8ebfa; border: none; color: #242424; border-radius: 8px 8px 0px 8px; }
+
+    .assistant-msg { background: #ffffff; color: #242424; border: 1px solid #e0e0e0; border-radius: 8px 8px 8px 0px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+    .no-box { background: transparent !important; border: none !important; box-shadow: none !important; padding: 12px 0 !important; }
+
     ::ng-deep .assistant-msg h3 { margin-top: 0; }
     ::ng-deep .assistant-msg p { margin: 0 0 10px 0; }
-    ::ng-deep .assistant-msg strong { color: #818cf8; }
+    ::ng-deep .assistant-msg strong { font-weight: 600; }
 
-    /* ── Multi-select chip area ── */
-    .multi-chip-area { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
-    .chip-btn {
-      display: inline-flex; align-items: center; gap: 6px;
-      padding: 6px 14px; border-radius: 999px;
-      border: 1px solid rgba(255,255,255,0.15);
-      background: rgba(30, 41, 59, 0.5);
-      color: #cbd5e1; font-size: 0.85rem; font-weight: 500;
-      cursor: pointer; transition: all 0.18s;
+    /* ── Dropdown ── */
+    .copilot-select {
+      width: 100%; padding: 12px 16px; border-radius: 12px; border: 1px solid #e2e8f0;
+      background: #f8fafc; color: #1e293b; font-size: 0.95rem; outline: none; margin-top: 10px;
+      appearance: none; cursor: pointer; transition: all 0.2s;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2364748b'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 12px center; background-size: 16px;
     }
-    .chip-btn:hover { border-color: #818cf8; color: #e0e7ff; background: rgba(99,102,241,0.15); }
-    .chip-btn.chip-selected { background: rgba(99,102,241,0.25); border-color: #6366f1; color: #fff; }
-    .chip-check { font-size: 0.75rem; color: #a5b4fc; }
-    .multi-hint { font-size: 0.72rem; color: #64748b; margin-top: 6px; margin-bottom: 0; }
+    .copilot-select:focus { border-color: #5b5fc7; background-color: #ffffff; box-shadow: 0 0 0 3px rgba(91, 95, 199, 0.1); }
 
-    .join-box { background: linear-gradient(135deg, #0f172a, #1e293b); border: 1px solid #6366f1; border-radius: 12px; padding: 14px 20px; margin: 10px 0 6px 0; width: fit-content; }
-    .join-box a { color: #818cf8; font-weight: 600; text-decoration: none; }
-    .join-box a:hover { color: #a5b4fc; }
+    
+    .join-box { background: #ffffff; border: 1px solid #e0e0e0; border-radius: 4px; padding: 14px 20px; margin: 10px 0 6px 0; width: fit-content; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
 
-    .input-area { padding: 20px; background: #020617; border-top: 1px solid #1e293b; display: flex; gap: 12px; align-items: center; }
-    input { flex: 1; padding: 14px 20px; border-radius: 12px; border: 1px solid #334155; background: #0f172a; color: white; font-size: 1rem; outline: none; transition: 0.2s; }
-    input:focus { border-color: #6366f1; }
+    .join-box a { color: #5b5fc7; font-weight: 600; text-decoration: none; }
+    .join-box a:hover { text-decoration: underline; }
+
+    .input-area { padding: 20px; background: transparent; display: flex; gap: 12px; align-items: center; justify-content: center; }
+    .input-wrapper {
+      display: flex; gap: 8px; width: 100%; background: #ffffff; padding: 6px; border-radius: 4px;
+      border: 1px solid #d1d1d1; align-items: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    }
+
+    input, .card-text-input { flex: 1; padding: 10px 16px; border-radius: 16px; border: none; background: transparent; color: #171717; font-size: 1rem; outline: none; }
+
+    .card-text-input { 
+      background: #ffffff; border: 1px solid #e2e8f0; width: 100%; box-sizing: border-box; 
+      margin-top: 10px; border-radius: 12px; padding: 12px 16px; font-size: 0.95rem; outline: none;
+      transition: all 0.2s;
+    }
+    .card-text-input:focus { border-color: #5b5fc7; box-shadow: 0 0 0 3px rgba(91, 95, 199, 0.1); }
     
     .send-btn { 
-      background: #6366f1; 
-      color: white; 
+      background: transparent; 
+      color: #5b5fc7; 
       border: none; 
-      width: 48px; height: 48px; 
-      border-radius: 12px; 
+      width: 36px; height: 36px; 
+      border-radius: 4px; 
       display: flex; align-items: center; justify-content: center; 
       cursor: pointer; transition: 0.2s; 
     }
-    .send-btn:hover:not(:disabled) { background: #818cf8; transform: scale(1.05); }
+    .send-btn:hover:not(:disabled) { background: #f0f0f0; }
     .send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
     
     .thinking-wrapper { display: flex; align-items: center; gap: 12px; margin-top: 15px; padding-left: 10px; }
-    .spinner-rotate { width: 22px; height: 22px; color: #6366f1; animation: spin 1s linear infinite; }
-    .thinking-text { font-size: 0.9rem; color: #94a3b8; font-weight: 500; }
+    .spinner-rotate { width: 20px; height: 20px; color: #5b5fc7; animation: spin 1s linear infinite; }
+    .thinking-text { font-size: 0.9rem; color: #6b7280; font-weight: 500; }
+
     .dots span { animation: pulse 1.4s infinite; opacity: 0; }
     .dots span:nth-child(2) { animation-delay: 0.2s; }
     .dots span:nth-child(3) { animation-delay: 0.4s; }
@@ -331,12 +360,12 @@ interface DisambigPerson {
     @keyframes pulse { 0% { opacity: 0; } 50% { opacity: 1; } 100% { opacity: 0; } }
 
     .edit-btn { 
-      background: rgba(255, 255, 255, 0.05); 
-      border: 1px solid rgba(255, 255, 255, 0.1); 
-      color: #94a3b8; 
+      background: #ffffff; 
+      border: 1px solid #d1d1d1; 
+      color: #616161; 
       cursor: pointer; 
       padding: 4px 10px; 
-      border-radius: 6px;
+      border-radius: 4px;
       font-size: 0.75rem; 
       font-weight: 500;
       transition: all 0.2s; 
@@ -345,21 +374,23 @@ interface DisambigPerson {
       gap: 4px;
       margin-top: 8px;
     }
-    .edit-btn:hover { background: rgba(99, 102, 241, 0.2); border-color: #6366f1; color: white; }
+    .edit-btn:hover { background: #f5f5f5; border-color: #bdbdbd; color: #242424; }
 
     .edit-area { display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 300px; }
-    .edit-area textarea { background: #0f172a; border: 1px solid #334155; color: white; padding: 10px; border-radius: 8px; font-family: inherit; resize: vertical; }
+    .edit-area textarea { background: #ffffff; border: 1px solid #d1d1d1; color: #242424; padding: 10px; border-radius: 4px; font-family: inherit; resize: vertical; box-shadow: inset 0 1px 2px rgba(0,0,0,0.05); }
     .edit-actions { display: flex; gap: 8px; justify-content: flex-end; }
-    .save-btn { background: #6366f1; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
-    .cancel-btn { background: none; border: 1px solid #334155; color: #94a3b8; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+    .save-btn { background: #5b5fc7; color: white; border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: 600; }
+    .save-btn:hover { background: #4a4d9e; }
+    .cancel-btn { background: #ffffff; border: 1px solid #d1d1d1; color: #616161; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: 600; }
+    .cancel-btn:hover { background: #f5f5f5; }
 
     .regenerate-btn { 
-      background: rgba(255, 255, 255, 0.05); 
-      border: 1px solid rgba(255, 255, 255, 0.1); 
-      color: #94a3b8; 
+      background: #ffffff; 
+      border: 1px solid #d1d1d1; 
+      color: #616161; 
       cursor: pointer; 
       padding: 4px 10px; 
-      border-radius: 6px;
+      border-radius: 4px;
       font-size: 0.75rem; 
       font-weight: 500;
       transition: all 0.2s; 
@@ -368,94 +399,93 @@ interface DisambigPerson {
       gap: 4px;
       margin-top: 10px;
     }
-    .regenerate-btn:hover { background: rgba(99, 102, 241, 0.2); border-color: #6366f1; color: white; }
+    .regenerate-btn:hover { background: #f5f5f5; border-color: #bdbdbd; color: #242424; }
 
-    .interactive-area { margin-top: 15px; }
-    .tap-label { color: #94a3b8; font-size: 0.78rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px; margin-top: 15px; }
+    .interactive-area { margin-top: 15px; width: 100%; padding: 0; background: transparent; border: none; box-shadow: none; }
+    .section-header { font-weight: 600; margin-bottom: 8px; color: #171717; }
     
-    .options-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
-    .opt-btn { 
-      background: rgba(30, 41, 59, 0.4); 
-      color: #f1f5f9; 
-      border: 1px solid rgba(255, 255, 255, 0.1); 
-      border-radius: 14px; 
-      padding: 14px 18px; 
+    .choice-btn { 
+      background: transparent; 
+      color: #171717; 
+      border: 1px solid #e5e7eb; 
+      border-radius: 8px; 
+      padding: 10px 14px; 
       font-size: 0.95rem; 
-      font-weight: 500; 
       cursor: pointer; 
       text-align: left; 
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-      backdrop-filter: blur(8px);
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 8px;
     }
-    .opt-btn:hover { background: rgba(99, 102, 241, 0.2); border-color: #6366f1; color: white; transform: translateY(-2px); box-shadow: 0 8px 16px rgba(99, 102, 241, 0.3); }
-    .slot-btn { border-color: rgba(99, 102, 241, 0.35); background: rgba(99, 102, 241, 0.08); }
-    .slot-btn:hover { background: rgba(99, 102, 241, 0.25); border-color: #818cf8; }
-    .continue-btn { background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.45); color: #6ee7b7; border-radius: 14px; padding: 14px 18px; font-size: 0.95rem; font-weight: 600; cursor: pointer; text-align: left; transition: all 0.2s; }
-    .continue-btn:hover { background: rgba(16, 185, 129, 0.25); border-color: #10b981; color: white; transform: translateY(-2px); box-shadow: 0 8px 16px rgba(16, 185, 129, 0.3); }
-    ::ng-deep .box-line { font-family: 'Courier New', monospace; font-size: 0.85rem; color: #94a3b8; display: block; white-space: pre; letter-spacing: 0; }
+
+    .choice-btn:hover { background: #f9fafb; }
+
+    .choice-btn.selected { border-color: #5b5fc7; background: #f3f2f1; font-weight: 600; }
+    .choice-btn:disabled { opacity: 0.5; cursor: default; }
+    
+    .radio-ring {
+      width: 18px; height: 18px; border-radius: 50%; border: 2px solid #d1d5db;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+
+    .choice-btn.selected .radio-ring { border-color: #5b5fc7; }
+    .radio-dot { width: 10px; height: 10px; background: #5b5fc7; border-radius: 50%; }
+    
+    .confirm-btn { background: #5b5fc7; color: white; border: none; border-radius: 4px; padding: 10px 20px; font-weight: 600; cursor: pointer; width: 100%; margin-top: 16px; transition: 0.2s; }
+    .confirm-btn:hover:not(:disabled) { background: #4a4d9e; }
+    .confirm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
     .dup-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
     .dup-update { background: linear-gradient(135deg, #0f4c75, #1b6ca8); color: white; border: none; border-radius: 8px; padding: 12px; font-weight: 600; cursor: pointer; }
     .dup-del { background: linear-gradient(135deg, #7f1d1d, #b91c1c); color: white; border: none; border-radius: 8px; padding: 12px; font-weight: 600; cursor: pointer; }
     .dup-new { background: linear-gradient(135deg, #14532d, #15803d); color: white; border: none; border-radius: 8px; padding: 12px; font-weight: 600; cursor: pointer; }
     
-    .attendee-row { display: flex; align-items: center; justify-content: space-between; background: #1e293b; padding: 10px 15px; border-radius: 8px; margin-bottom: 8px; }
-    .attendee-row label { display: flex; align-items: center; gap: 10px; cursor: pointer; }
-    .attendee-row select { background: #0f172a; border: 1px solid #334155; color: white; padding: 6px; border-radius: 6px; outline: none; }
-    .confirm-btn { background: linear-gradient(135deg, #6366f1, #4f46e5); color: white; border: none; border-radius: 8px; padding: 12px 20px; font-weight: 600; cursor: pointer; width: 100%; margin-top: 10px; }
-    .editor-overlay { position: fixed; inset: 0; background: rgba(2,6,23,0.75); display: flex; align-items: center; justify-content: center; z-index: 2000; }
-    .editor-card { width: min(560px, 90vw); background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
-    .editor-card h3 { margin: 0 0 8px 0; color: #f8fafc; }
-    .editor-card label { font-size: 0.8rem; color: #94a3b8; }
-    .editor-card textarea, .editor-card input { background: #020617; border: 1px solid #334155; color: #fff; border-radius: 8px; padding: 10px; }
+    .attendee-row { display: flex; align-items: center; justify-content: space-between; background: #f3f2f1; padding: 10px 15px; border-radius: 8px; margin-bottom: 8px; }
+    .attendee-row label { display: flex; align-items: center; gap: 10px; cursor: pointer; color: #242424; }
+    .attendee-row select { background: #ffffff; border: 1px solid #d1d1d1; color: #242424; padding: 6px; border-radius: 6px; outline: none; }
+    .editor-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 2000; backdrop-filter: blur(4px); }
+    .popup-wrapper { width: min(800px, 95vw); max-height: 90vh; display: flex; flex-direction: column; background: #ffffff; border-radius: 8px; box-shadow: 0 20px 40px rgba(0,0,0,0.2); }
+    .drag-handle { background: #f3f2f1; color: #424242; padding: 12px 24px; border-radius: 8px 8px 0 0; display: flex; justify-content: space-between; align-items: center; cursor: move; border-bottom: 1px solid #e0e0e0; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    .scrollable-form { overflow-y: auto; overflow-x: hidden; border-radius: 0 0 8px 8px; background: #ffffff; }
+    .scrollable-form::-webkit-scrollbar { width: 8px; }
+    .scrollable-form::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.6); }
+    .scrollable-form::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+    .scrollable-form::-webkit-scrollbar-thumb:hover { background: #64748b; }
 
     /* ── Disambiguation Card ── */
-    .disambig-card { margin-top: 14px; background: rgba(15,23,42,0.8); border: 1px solid rgba(99,102,241,0.3); border-radius: 16px; padding: 16px; }
-    .disambig-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-    .disambig-title { font-size: 0.85rem; font-weight: 700; color: #a5b4fc; letter-spacing: 0.05em; text-transform: uppercase; }
-    .toggle-mode-btn {
-      font-size: 0.78rem; font-weight: 600; padding: 5px 12px; border-radius: 999px;
-      border: 1px solid rgba(99,102,241,0.5); background: rgba(99,102,241,0.12); color: #a5b4fc;
-      cursor: pointer; transition: all 0.18s;
+    .disambig-card { margin-top: 14px; padding: 0; }
+    .disambig-header { margin-bottom: 16px; padding-bottom: 4px; }
+    .disambig-title { font-size: 0.85rem; font-weight: 700; color: #5b5fc7; text-transform: uppercase; letter-spacing: 0.05em; }
+    
+    .disambig-list { display: flex; flex-direction: column; }
+    .person-row { 
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 8px; border-radius: 8px; cursor: pointer; transition: 0.2s;
+      margin-bottom: 2px;
     }
-    .toggle-mode-btn:hover { background: rgba(99,102,241,0.25); color: #fff; }
-    .disambig-grid { display: flex; flex-direction: column; gap: 8px; }
-    .person-card {
-      display: flex; align-items: center; gap: 12px;
-      background: rgba(30,41,59,0.5); border: 1px solid rgba(255,255,255,0.07);
-      border-radius: 12px; padding: 12px 14px; cursor: pointer;
-      transition: all 0.18s; text-align: left; width: 100%;
-      position: relative;
-    }
-    .person-card:hover { border-color: rgba(99,102,241,0.5); background: rgba(99,102,241,0.1); }
-    .person-card.person-selected { border-color: #6366f1; background: rgba(99,102,241,0.18); }
-    .person-avatar {
-      width: 40px; height: 40px; border-radius: 50%;
-      background: linear-gradient(135deg, #4f46e5, #7c3aed);
+    .person-row:hover { background: #f8f8f8; }
+    .person-row.selected { background: transparent; }
+    
+    .person-details { display: flex; flex-direction: column; gap: 2px; }
+    .person-name { font-size: 0.95rem; font-weight: 600; color: #242424; }
+    .person-meta { display: flex; flex-direction: column; font-size: 0.75rem; color: #6b7280; }
+    .person-email { color: #5b5fc7; margin-top: 1px; }
+    
+    .checkbox { 
+      width: 20px; height: 20px; border: 2px solid #5b5fc7; border-radius: 4px;
       display: flex; align-items: center; justify-content: center;
-      font-size: 1rem; font-weight: 700; color: white; flex-shrink: 0;
+      transition: 0.2s; color: white; font-size: 0.8rem; font-weight: bold;
     }
-    .person-info { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
-    .person-name { font-size: 0.92rem; font-weight: 600; color: #f1f5f9; }
-    .person-dept {
-      display: inline-block; font-size: 0.72rem; font-weight: 600;
-      color: #818cf8; background: rgba(99,102,241,0.15);
-      border: 1px solid rgba(99,102,241,0.3); border-radius: 999px;
-      padding: 1px 8px; margin-top: 2px; width: fit-content;
+    .checkbox.checked { background: #5b5fc7; }
+
+    .disambig-confirm-btn { 
+      width: 100%; background: #5b5fc7; color: white; border: none; padding: 12px; 
+      border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; 
+      margin-top: 16px; 
     }
-    .person-eid { font-size: 0.72rem; color: #475569; margin-top: 1px; }
-    .person-check {
-      position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
-      width: 22px; height: 22px; border-radius: 50%;
-      background: #6366f1; color: white; font-size: 0.8rem;
-      display: flex; align-items: center; justify-content: center; font-weight: 700;
-    }
-    .disambig-confirm-btn {
-      width: 100%; margin-top: 12px; padding: 11px;
-      background: linear-gradient(135deg, #4f46e5, #6366f1);
-      color: white; border: none; border-radius: 10px;
-      font-weight: 700; font-size: 0.9rem; cursor: pointer; transition: 0.18s;
-    }
+    .disambig-confirm-btn:disabled { opacity: 0.4; cursor: not-allowed; }
     .disambig-confirm-btn:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); }
     .disambig-confirm-btn:disabled { opacity: 0.4; cursor: not-allowed; }
     
@@ -507,7 +537,7 @@ interface DisambigPerson {
 export class ChatComponent {
   api = inject(ApiService);
   cdr = inject(ChangeDetectorRef);
-  
+
   @ViewChild('scrollContainer') scrollContainer!: ElementRef;
   private readonly sessionStorageKey = 'ai-butler-session-id';
   private sessionId = this.getOrCreateSessionId();
@@ -522,18 +552,18 @@ export class ChatComponent {
   messages: Message[] = [
     {
       role: 'assistant',
-      content: '👋 Hi! I am ARIA, your AI Scheduling Assistant.\n\nJust tell me what you need — for example:\n• "Schedule a 1:1 with Anand"\n• "Book a sprint review with the engineering team on Friday"\n• "Meet with Rahul and Ananya tomorrow at 3pm"\n\nI will handle time slots, rooms, title, and agenda automatically.'
+      content: '👋 Hi! I am ARIA, your AI Scheduling Assistant.\n\nHow can I help you schedule today?'
     }
   ];
-  
+
   // For attendee selection state
-  attendeeSelections: {selected: boolean, importance: string}[] = [];
+  attendeeSelections: { selected: boolean, importance: string }[] = [];
   confirmCandidateChoice = '';
   showMeetingEditor = false;
   meetingEdit: any = {};
 
   // ── Disambiguation state ─────────────────────────────────────────────────
-  disambigBulkMode = false;          // false = single select, true = multi-select
+  disambigBulkMode = true;           // Enabled multi-select by default
   selectedDisambigPeople = new Set<string>(); // selected EIDs
   private disambigCache = new Map<string, DisambigPerson>(); // label → parsed person
 
@@ -543,7 +573,26 @@ export class ChatComponent {
   startX = 0;
   startY = 0;
 
-  constructor() {}
+  cardSelections: Record<string, string> = {};
+
+  constructor() { }
+
+  formatMessage(text: string): string {
+    if (!text) return '';
+    // Bold
+    let html = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    // Code inline
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // Preserve box drawing / monospace blocks
+    const lines = html.split('\n');
+    const processed = lines.map(line => {
+      if (/^[│┌┐└┘╔╠╚╗╝║━─┼├┤┬┴╣╦╩╬\s]/.test(line) && line.trim().length > 0) {
+        return `<span class="box-line">${line}</span>`;
+      }
+      return line;
+    });
+    return processed.join('<br>');
+  }
 
   onDragStart(event: MouseEvent) {
     this.isDragging = true;
@@ -565,7 +614,6 @@ export class ChatComponent {
   // ─── Gathering Card local state ──────────────────────────────────────────
   // Maps sectionKey → selected option label. Populated purely on the frontend;
   // only serialised and sent to backend when 'Confirm & Book' is tapped.
-  cardSelections: Record<string, string> = {};
 
   // For multi-select sections (presenter): sectionKey → Set of selected labels
   multiSelections: Record<string, Set<string>> = {};
@@ -580,6 +628,22 @@ export class ChatComponent {
   /** True if this section is a free text input */
   isTextSection(section: string): boolean {
     return section.toLowerCase().includes('(type below)');
+  }
+
+  topicOtherText = '';
+
+  onTopicOtherInput(event: Event) {
+    this.topicOtherText = (event.target as HTMLInputElement).value;
+  }
+
+  onDropdownChange(section: string, event: Event) {
+    const val = (event.target as HTMLSelectElement).value;
+    this.cardSelections[section] = val;
+    this.cdr.detectChanges();
+  }
+
+  hasOtherSelected(opts: any[]): boolean {
+    return opts && opts.some(o => o.startsWith('✅') && this.cleanOpt(o) === 'Other');
   }
 
   /** Handle text input typing */
@@ -627,27 +691,10 @@ export class ChatComponent {
     return (opts || []).filter((o: string) => o && o.trim().length > 0);
   }
 
-  /**
-   * When user taps a button inside a gathering card section:
-   * - mark that option with ✅ locally (so the card updates without a server round-trip)
-   * - strip ✅ from all OTHER options in the same section
-   * - then call sendAction with a compact spec so the backend can also update draft state
-   */
   onCardTap(sectionKey: string, opt: string, msg: Message) {
+    if (this.loading || !!msg.finalSelections) return;
     const raw = this.cleanOpt(opt);
     if (!msg.titledSections) return;
-
-    // If tapping the already-selected option — deselect it
-    const isAlreadySelected = opt.startsWith('✅');
-    if (isAlreadySelected) {
-      delete this.cardSelections[sectionKey];
-      // Strip the ✅ from this option (deselect)
-      msg.titledSections[sectionKey] = (msg.titledSections[sectionKey] as string[]).map(
-        (o: string) => this.cleanOpt(o)
-      );
-      this.cdr.detectChanges();
-      return;
-    }
 
     // Store in local state (never call backend here)
     this.cardSelections[sectionKey] = raw;
@@ -657,12 +704,18 @@ export class ChatComponent {
       const clean = this.cleanOpt(o);
       return clean === raw ? `✅ ${clean}` : clean;
     });
+
+    // Clear other text if not Other
+    if (sectionKey.toLowerCase().includes('topic') && raw !== 'Other') {
+      this.topicOtherText = '';
+    }
+
     this.cdr.detectChanges();
-    // ⚠️ Do NOT call sendAction here — that would displace the card.
   }
 
   /** Handle conflict card tap — alternate slot or proceed original */
   onConflictTap(opt: string) {
+    if (this.loading) return;
     if (opt.startsWith('Proceed with original')) {
       this.sendAction('Continue with given time anyway');
     } else {
@@ -679,17 +732,19 @@ export class ChatComponent {
     // Build the machine payload (not shown to user)
     const parts: string[] = ['[CONFIRM_BOOKING]'];
     for (const [section, value] of Object.entries(this.cardSelections)) {
-      parts.push(`${section}=${value}`);
+      if (section.toLowerCase().includes('topic') && value === 'Other' && this.topicOtherText.trim()) {
+        parts.push(`${section}=${this.topicOtherText.trim()}`);
+      } else {
+        parts.push(`${section}=${value}`);
+      }
     }
     const payload = parts.join(' | ');
+    msg.finalSelections = { ...this.cardSelections, topicOtherText: this.topicOtherText };
     this.cardSelections = {}; // reset for next card
     this.multiSelections = {}; // reset multi-select too
+    this.topicOtherText = '';
 
-    // Show a clean label in the chat (not the raw payload)
-    this.messages.push({ role: 'user', content: '✅ Confirming booking...' });
-    this.scrollToBottom();
-
-    // Send the machine payload to backend directly (without adding it to chat again)
+    // Send the machine payload to backend directly
     this.processQuery(payload);
   }
 
@@ -697,39 +752,47 @@ export class ChatComponent {
     if (!msg.titledSections) return true;
     for (const key in msg.titledSections) {
       if (!msg.titledSections.hasOwnProperty(key)) continue;
-      
+
       if (this.isTextSection(key)) {
         if (!this.cardSelections[key] || !this.cardSelections[key].trim()) return false;
-      } else if (this.isMultiSection(key)) {
-        // Multi-select: need at least one chip selected
-        if (!this.cardSelections[key] || !this.cardSelections[key].trim()) return false;
+      } else if (key.toLowerCase().includes('presenter') || key.toLowerCase().includes('participant')) {
+        if (!this.cardSelections[key]) return false;
       } else {
-        const hasSelection = (msg.titledSections[key] || []).some((opt: string) => opt.startsWith('✅'));
+        const hasSelection = (msg.titledSections[key] || []).some((opt: string) => opt.startsWith('✅') || this.cardSelections[key] === this.cleanOpt(opt));
         if (!hasSelection) return false;
+
+        if (key.toLowerCase().includes('topic') && (this.cardSelections[key] === 'Other' || this.hasOtherSelected(msg.titledSections[key]))) {
+          if (!this.topicOtherText || !this.topicOtherText.trim()) return false;
+        }
       }
     }
     return true;
   }
 
   handleEditTapped(option: string, meetingData: any) {
+    if (this.loading) return;
     if (option.includes('Cancel')) {
       this.sendAction('Cancel meeting');
       return;
     }
+    if (option.includes('Proceed')) {
+      this.sendAction('Proceed with booking');
+      return;
+    }
     // Most edit buttons redirect to the dedicated meeting editor for precise control
     this.openMeetingEditor(meetingData);
-    this.messages.push({ 
-      role: 'assistant', 
-      content: `Opening editor for ${option.replace('Edit ', '')}...` 
+    this.messages.push({
+      role: 'assistant',
+      content: `Opening editor for ${option.replace('Edit ', '')}...`
     });
     this.scrollToBottom();
   }
 
   sendMessage() {
-    if (!this.prompt.trim()) return;
+    if (this.loading || !this.prompt.trim()) return;
     const userText = this.prompt;
     this.prompt = '';
-    
+
     this.messages.push({ role: 'user', content: userText });
     this.scrollToBottom();
 
@@ -737,6 +800,7 @@ export class ChatComponent {
   }
 
   sendAction(actionText: string) {
+    if (this.loading) return;
     this.messages.push({ role: 'user', content: actionText });
     this.scrollToBottom();
     this.processQuery(actionText);
@@ -755,66 +819,80 @@ export class ChatComponent {
   saveEdit(index: number) {
     const newContent = this.editPrompt.trim();
     if (!newContent) return;
-    
+
     // Remove all subsequent messages (ChatGPT style)
     this.messages.splice(index);
     this.messages.push({ role: 'user', content: newContent });
     this.editingIndex = null;
     this.editPrompt = '';
-    
-    this.processQuery(newContent);
+
+    this.processQuery(newContent, index);
   }
 
-  processQuery(q: string) {
+  processQuery(q: string, truncateHistory?: number) {
     this.loading = true;
-    this.loadingMessage = 'AI is understanding your request';
-    this.startStatusPolling();
+    this.loadingMessage = 'ARIA is thinking';
     this.scrollToBottom();
 
-    this.api.processMessage(q, this.sessionId).subscribe({
+    this.api.processMessage(q, this.sessionId, truncateHistory).subscribe({
       next: (res) => {
         this.loading = false;
-        this.stopStatusPolling();
-        this.loadingMessage = 'AI is thinking';
-        
+
         // Extract teams links
+        const rawResp = res?.response || '';
         const linkRegex = /https:\/\/teams\.\S+/g;
-        const links = res.response.match(linkRegex) || [];
-        
-        const isInteractive = (res.options && res.options.length > 0) ||
-                              res.option_type === 'duplicate_action' ||
-                              res.option_type === 'title_and_agenda' ||
-                              res.option_type === 'attendee_confirm' ||
-                              res.option_type === 'timeslot' ||
-                              res.option_type === 'conflict' ||
-                              res.option_type === 'attendee';
-        
+        let links = rawResp.match(linkRegex) || [];
+        if (res?.links && Array.isArray(res.links)) {
+          links = [...links, ...res.links];
+        }
+
+        // Parse raw JSON if returned in response text
+        let finalResponse = rawResp;
+        let finalOptions = res?.options || [];
+        let finalOptionType = res?.option_type || 'general';
+        let finalIntent = res?.intent || '';
+        let finalTitledSections = res?.titled_sections || {};
+
+        if (finalResponse.trim().startsWith('{') && finalResponse.trim().endsWith('}')) {
+          try {
+            const parsed = JSON.parse(finalResponse);
+            if (parsed.message) finalResponse = parsed.message;
+            if (parsed.options) finalOptions = parsed.options;
+            if (parsed.type) finalOptionType = parsed.type;
+            if (parsed.intent) finalIntent = parsed.intent;
+            if (parsed.titled_sections) finalTitledSections = parsed.titled_sections;
+          } catch (e) {}
+        }
+
+        const isInteractive = (finalOptions && finalOptions.length > 0) ||
+          ['duplicate_action', 'title_and_agenda', 'attendee_confirm', 'timeslot', 'conflict', 'attendee', 'attendee_disambiguation', 'gathering_card'].includes(finalOptionType);
+
         // Reset disambiguation state for each new response
         this.selectedDisambigPeople.clear();
         this.disambigCache.clear();
-        this.disambigBulkMode = false;
+        this.disambigBulkMode = true; // Default to multi-select
 
         this.messages.push({
           role: 'assistant',
-          content: res.response,
+          content: finalResponse,
           links: links,
-          options: res.options || [],
-          optionType: res.option_type || 'general',
-          titledSections: res.titled_sections || {},
-          existingMeeting: res.existing_meeting || null,
-          meetingData: res.meeting_data || null,
-          candidateOptions: res.candidate_options || [],
-          selectionMap: res.selection_map || {},
+          options: finalOptions,
+          optionType: finalOptionType,
+          titledSections: finalTitledSections,
+          existingMeeting: res?.existing_meeting || null,
+          meetingData: res?.meeting_data || null,
+          candidateOptions: res?.candidate_options || [],
+          selectionMap: res?.selection_map || {},
           isInteractive,
-          intent: res.intent || ''
+          intent: finalIntent
         });
 
         // Setup attendee state if needed
         if (res.option_type === 'attendee') {
-           this.attendeeSelections = (res.options || []).map(() => ({
-             selected: false,
-             importance: q.toLowerCase().includes('imp') ? 'required' : 'optional'
-           }));
+          this.attendeeSelections = (res.options || []).map(() => ({
+            selected: false,
+            importance: q.toLowerCase().includes('imp') ? 'required' : 'optional'
+          }));
         }
         if (res.option_type === 'attendee_confirm') {
           this.confirmCandidateChoice = (res.candidate_options || [])[0] || '';
@@ -824,8 +902,6 @@ export class ChatComponent {
       },
       error: (err) => {
         this.loading = false;
-        this.stopStatusPolling();
-        this.loadingMessage = 'AI is thinking';
         this.messages.push({ role: 'assistant', content: '❌ Error contacting AI: ' + err.message });
         this.scrollToBottom();
       }
@@ -866,8 +942,8 @@ export class ChatComponent {
   confirmAttendees(options: string[]) {
     const selected = options.filter((_, i) => this.attendeeSelections[i].selected);
     if (selected.length > 0) {
-       const lines = selected.map((opt) => opt.split('*').join(''));
-       this.sendAction(lines.join('\n'));
+      const lines = selected.map((opt) => opt.split('*').join(''));
+      this.sendAction(lines.join('\n'));
     }
   }
 
@@ -884,17 +960,22 @@ export class ChatComponent {
     const start = new Date(meetingData?.start || new Date().toISOString());
     const end = new Date(meetingData?.end || new Date(start.getTime() + 60 * 60000));
     const duration = Math.max(30, Math.round((end.getTime() - start.getTime()) / 60000));
+
     this.meetingEdit = {
-      event_id: meetingData?.event_id || '',
-      fingerprint: meetingData?.fingerprint || '',
+      event_id: meetingData?.event_id || meetingData?.id || '',
+      fingerprint: meetingData?.fingerprint || meetingData?.new_fingerprint || '',
       subject: meetingData?.subject || '',
-      agenda: meetingData?.agenda || '',
-      location: meetingData?.location || 'Virtual',
+      agenda: meetingData?.agenda || meetingData?.bodyPreview || '',
+      location: meetingData?.location || meetingData?.room || 'Virtual',
       presenter: meetingData?.presenter || '',
       recurrence: meetingData?.recurrence || 'none',
-      date: start.toISOString().slice(0, 10),
-      time: `${start.getHours().toString().padStart(2, '0')}:${start.getMinutes().toString().padStart(2, '0')}`,
-      duration,
+      start: start.toISOString(),
+      end: end.toISOString(),
+      duration: duration.toString(),
+      attendees: meetingData?.attendees || [],
+      attendee_ids: meetingData?.attendee_ids || meetingData?.attendeeIds || [],
+      room: meetingData?.room || '',
+      team: meetingData?.team || 'General'
     };
     this.showMeetingEditor = true;
   }
@@ -906,47 +987,29 @@ export class ChatComponent {
     this.dragY = 0;
   }
 
-  saveMeetingEditor() {
-    if (!this.meetingEdit?.event_id || !this.meetingEdit?.date || !this.meetingEdit?.time) return;
-    const localStart = new Date(`${this.meetingEdit.date}T${this.meetingEdit.time}:00`);
-    const localEnd = new Date(localStart.getTime() + Number(this.meetingEdit.duration || 60) * 60000);
-    this.api.updateMeeting({
-      event_id: this.meetingEdit.event_id,
-      fingerprint: this.meetingEdit.fingerprint || '',
-      new_start: localStart.toISOString(),
-      new_end: localEnd.toISOString(),
-      new_subject: this.meetingEdit.subject || '',
-      new_agenda: this.meetingEdit.agenda || '',
-      new_location: this.meetingEdit.location || '',
-      new_recurrence: this.meetingEdit.recurrence || 'none',
-      new_presenter: this.meetingEdit.presenter || '',
-    }).subscribe({
-      next: () => {
-        this.closeMeetingEditor();
-        this.messages.push({ role: 'assistant', content: 'Meeting updated successfully.' });
-        this.scrollToBottom();
-      },
-      error: (err) => {
-        this.messages.push({ role: 'assistant', content: '❌ Failed to update meeting: ' + err.message });
-        this.scrollToBottom();
-      }
-    });
-  }
+  onScheduleFormSubmit(event: any) {
+    this.closeMeetingEditor();
 
-  formatMessage(text: string): string {
-    // Bold
-    let html = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-    // Code inline
-    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-    // Preserve box drawing / monospace blocks (lines starting with │ ┌ ┐ └ ┘ ╔ ╠ ╚ ╗ ╝ ║ ━ ─ ┼)
-    const lines = html.split('\n');
-    const processed = lines.map(line => {
-      if (/^[│┌┐└┘╔╠╚╗╝║━─┼├┤┬┴╣╦╩╬\s]/.test(line) && line.trim().length > 0) {
-        return `<span class="box-line">${line}</span>`;
-      }
-      return line;
-    });
-    return processed.join('<br>');
+    let attendeesText = '';
+    if (event.attendees && event.attendees.length > 0) {
+     attendeesText = event.selectedAttendees.map((a: any) => `${a.name} (EID: ${a.id}) (Email: ${a.email}) (${a.importance})`).join(', ');
+    }
+
+    const promptText = `[structured form submission]
+Please update the meeting.
+Event ID: ${event.eventId || 'N/A'}
+Topic: ${event.subject}
+Date: ${event.date}
+Time: ${event.time}
+Duration: ${event.duration} mins
+Recurrence: ${event.recurrence}
+Room: ${event.room || 'Not specified'}
+Location: ${event.location || 'Not specified'}
+Presenter: ${event.presenter || 'Not specified'}
+Attendees: ${attendeesText}`;
+
+    this.messages.push({ role: 'user', content: 'Updating meeting details via form...' });
+    this.processQuery(promptText);
   }
 
   /** Returns true if the option is the 'Continue with given time' fallback. */
@@ -983,13 +1046,19 @@ export class ChatComponent {
   getDisambigPeople(options: string[]): DisambigPerson[] {
     return options.map(label => {
       if (this.disambigCache.has(label)) return this.disambigCache.get(label)!;
-      // Format: "Select: Name (Dept) - EID: 123"
-      const m = label.match(/Select:\s*(.+?)\s*\((.+?)\)\s*-\s*EID:\s*(\w+)/i);
+      
+      // Robust extraction for email and eid even if the full regex fails
+      const emailMatch = label.match(/Email:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i) || label.match(/Email:\s*([^\s]+)/i);
+      const eidMatch = label.match(/EID:\s*(\w+)/i);
+      const nameMatch = label.match(/Select:\s*(.+?)\s*\(/i);
+      const deptMatch = label.match(/\((.+?)\)/i);
+
       const person: DisambigPerson = {
         label,
-        name: m ? m[1].trim() : label,
-        dept: m ? m[2].trim() : '',
-        eid: m ? m[3].trim() : '',
+        name: nameMatch ? nameMatch[1].trim() : label.split('(')[0].replace('Select:', '').trim(),
+        dept: deptMatch ? deptMatch[1].trim() : '',
+        email: emailMatch ? emailMatch[1].trim() : '',
+        eid: eidMatch ? eidMatch[1].trim() : '',
         selected: false,
       };
       this.disambigCache.set(label, person);
@@ -1001,7 +1070,8 @@ export class ChatComponent {
     return this.selectedDisambigPeople.has(p.eid);
   }
 
-  onPersonTap(p: DisambigPerson, msg: Message) {
+  onPersonTap(p: DisambigPerson, msg: Message, i: number) {
+    if (this.loading || i !== this.messages.length - 1) return;
     if (!this.disambigBulkMode) {
       // Single mode: clear all and select this one only
       this.selectedDisambigPeople.clear();
@@ -1074,24 +1144,5 @@ export class ChatComponent {
     }
 
     return `session-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-  }
-
-  private startStatusPolling() {
-    this.stopStatusPolling();
-    this.statusPollSub = interval(600).subscribe(() => {
-      this.api.getAgentStatus(this.sessionId).subscribe({
-        next: (res) => {
-          if (res?.message) {
-            this.loadingMessage = res.message;
-            this.cdr.markForCheck();
-          }
-        }
-      });
-    });
-  }
-
-  private stopStatusPolling() {
-    this.statusPollSub?.unsubscribe();
-    this.statusPollSub = undefined;
   }
 }

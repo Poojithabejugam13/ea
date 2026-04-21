@@ -25,17 +25,12 @@ load_dotenv()
 PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 LOCATION   = os.getenv("GCP_LOCATION", "us-central1")
 # Primary model — gemini-2.5-pro worked until recently; fallbacks tried in order if 404
-MODEL_NAME = os.getenv("VERTEX_MODEL", "gemini-2.5-pro")
+MODEL_NAME = os.getenv("VERTEX_MODEL", "gemini-1.5-pro")
 CANDIDATE_MODELS = [
     MODEL_NAME,
-    "gemini-2.5-pro",
-    "gemini-2.5-pro-preview-05-06",
-    "gemini-2.5-pro-preview-03-25",
     "gemini-2.0-flash",
-    "gemini-2.0-flash-001",
     "gemini-1.5-flash",
     "gemini-1.5-pro",
-    "gemini-1.5-pro-001",
 ]
 
 
@@ -173,15 +168,44 @@ Rules:
 
 ---
 
-### TYPE 2 — booked
-Use when: user confirmed all selections from group_selection card
-AND room is available or user confirmed a room
+### TYPE 2 — draft_review
+Use when: user confirmed all selections from group_selection card AND room is available or user confirmed a room.
+DO NOT call create_meeting yet. The user must review the draft first.
+
+{{
+  "type": "draft_review",
+  "title": "AI generated title from topic",
+  "agenda": "AI generated 2-3 line structured agenda from topic",
+  "participants": [
+    {"name": "Poojitha Reddy", "email": "poojitha@example.com", "id": "103"},
+    {"name": "Rithwika Singh", "email": "rithwika@example.com", "id": "105"}
+  ],
+  "start": "2026-04-21T15:00:00Z",
+  "end": "2026-04-21T16:00:00Z",
+  "room": "Room name or Virtual",
+  "presenter": "Name of selected presenter",
+  "recurrence": "Weekly — omit this field if one-time"
+}}
+
+Rules:
+- Always generate title and agenda from topic
+- participants must be a list of objects with name, email, and id (EID)
+- NEVER call create_meeting for a draft.
+
+---
+
+### TYPE 3 — booked
+Use when: user explicitly says "Proceed with booking" or "Proceed".
+You MUST call the create_meeting tool, then return this payload:
 
 {{
   "type": "booked",
   "title": "AI generated title from topic",
   "agenda": "AI generated 2-3 line structured agenda from topic",
-  "participants": ["Name (IST)", "Name (IST)", "Name (IST)"],
+  "participants": [
+    {"name": "Poojitha Reddy", "email": "poojitha@example.com", "id": "103"},
+    {"name": "Rithwika Singh", "email": "rithwika@example.com", "id": "105"}
+  ],
   "start": "2026-04-21T15:00:00Z",
   "end": "2026-04-21T16:00:00Z",
   "room": "Room name or Virtual",
@@ -191,14 +215,13 @@ AND room is available or user confirmed a room
 }}
 
 Rules:
-- Always generate title from topic
-- Always generate agenda from topic
-- Always generate joinLink
+- Always call create_meeting tool before outputting this.
+- generate joinLink from tool output.
 - recurrence — include only if not one-time
 
 ---
 
-### TYPE 3 — conflict
+### TYPE 4 — conflict
 Use when: user-given time has a calendar conflict for any participant
 
 {{
@@ -220,7 +243,7 @@ Rules:
 
 ---
 
-### TYPE 4 — room_conflict
+### TYPE 5 — room_conflict
 Use when: user-specified room is not available at the chosen time
 
 {{
@@ -241,21 +264,20 @@ Rules:
 
 ---
 
-### TYPE 5 — disambiguation
+### TYPE 6 — disambiguation
 Use when: search_users or get_users_by_team returns multiple results for a name and you are unsure which one the user meant.
 
 {{
   "type": "disambiguation",
   "message": "I found multiple people with that name. Which one did you mean?",
   "options": [
-    "Select: John Doe (Engineering) - EID: 101",
-    "Select: John Smith (HR) - EID: 102"
+    {"name": "John Doe", "department": "Engineering", "email": "john@ex.com", "eid": "101"},
+    {"name": "John Smith", "department": "HR", "email": "smith@ex.com", "eid": "102"}
   ]
 }}
 
 Rules:
-- Always include the department and EID in the option label to help the user distinguish.
-- Use the exact format "Select: [Name] ([Department]) - EID: [EID]".
+- Options must be a list of objects, each containing name, department, email, and eid.
 
 ---
 
@@ -303,10 +325,8 @@ class GeminiAgent:
             os.environ["GOOGLE_CLOUD_LOCATION"]      = LOCATION
             print(f"INFO: Vertex AI backend enabled (project={PROJECT_ID}, location={LOCATION})")
 
-        # Try each candidate model until one initialises without a 404
-        tried: list[str] = []
-        last_err: Exception | None = None
-        chosen_model: str | None = None
+        # Direct initialization without probing to avoid hangs in the FastAPI loop
+        chosen_model = "gemini-1.5-flash"
         system_instr = get_system_instruction()
         tools_list = [
             search_users, get_users_by_team, get_user_schedule,
@@ -315,41 +335,16 @@ class GeminiAgent:
             notify_user, delete_meeting,
         ]
 
-        # De-duplicate while preserving order
-        seen: set[str] = set()
-        unique_candidates = [m for m in CANDIDATE_MODELS if not (m in seen or seen.add(m))]  # type: ignore[func-returns-value]
-
-        for model in unique_candidates:
-            if model in tried:
-                continue
-            tried.append(model)
-            try:
-                agent = Agent(
-                    name="scheduling_assistant",
-                    description=(
-                        "AI assistant for booking and managing meetings "
-                        "on behalf of Poojitha Reddy (Engineering Manager)."
-                    ),
-                    model=model,
-                    instruction=system_instr,
-                    tools=tools_list,
-                )
-                # Probe: create runner — real 404 surfaces on first run_async call,
-                # but Agent() itself will raise ValueError for unknown model strings.
-                self.agent = agent
-                chosen_model = model
-                print(f"INFO: ADK Agent initialised with model={model}")
-                break
-            except Exception as e:
-                last_err = e
-                print(f"WARN: Model {model!r} failed init: {ascii(str(e))}")
-                continue
-
-        if chosen_model is None:
-            raise RuntimeError(
-                f"No Vertex AI model available. Tried: {tried}. "
-                f"Last error: {ascii(str(last_err))}"
-            )
+        self.agent = Agent(
+            name="scheduling_assistant",
+            description=(
+                "AI assistant for booking and managing meetings "
+                "on behalf of Poojitha Reddy (Engineering Manager)."
+            ),
+            model=chosen_model,
+            instruction=system_instr,
+            tools=tools_list,
+        )
 
         self.session_service = RedisADKSessionService(self.session_mgr)
         self.runner = Runner(
@@ -358,11 +353,12 @@ class GeminiAgent:
             session_service=self.session_service,
         )
         print(f"INFO: ADK AI Agent (ARIA) ready — model={chosen_model}, Vertex AI powered.")
+        print(f"INFO: ADK AI Agent (ARIA) ready — model={chosen_model}, Vertex AI powered.")
 
     # ── async core ──────────────────────────────────────────────────────────
 
     async def process_message_async(
-        self, message: str, session_id: str = "default"
+        self, message: str, session_id: str = "default", truncate_history: int = None
     ) -> tuple[str, list]:
         """
         Main async entry-point.
@@ -385,10 +381,31 @@ class GeminiAgent:
                 session_id=session_id,
             )
             if not current_session:
-                await self.session_service.create_session(
+                current_session = await self.session_service.create_session(
                     app_name="scheduling_app",
                     user_id="default_user",
                     session_id=session_id,
+                )
+            
+            if truncate_history is not None and current_session and hasattr(current_session, 'events'):
+                keep_pairs = max(0, truncate_history - 1)
+                if keep_pairs == 0:
+                    current_session.events = []
+                else:
+                    new_events = []
+                    model_resp_count = 0
+                    for ev in current_session.events:
+                        new_events.append(ev)
+                        if getattr(ev, "type", "") == "model_response":
+                            model_resp_count += 1
+                            if model_resp_count >= keep_pairs:
+                                break
+                    current_session.events = new_events
+                
+                # Force save to Redis
+                self.session_service.sm._r_set(
+                    self.session_service._redis_key("scheduling_app", "default_user", session_id), 
+                    current_session.model_dump(mode="json"), ttl=86400
                 )
         except Exception as exc:
             print(f"DEBUG: Session init error: {exc}")
@@ -434,14 +451,5 @@ class GeminiAgent:
 
     # ── sync wrapper ─────────────────────────────────────────────────────────
 
-    def process_message(
-        self,
-        message: str,
-        history: list = None,   # kept for backward-compat; not used internally
-        session_id: str = "default",
-    ) -> tuple[str, list]:
-        """
-        Synchronous wrapper around process_message_async.
-        Maintains API compatibility with existing services.py callers.
-        """
-        return asyncio.run(self.process_message_async(message, session_id))
+    # Synchronous process_message removed to prevent asyncio.run() hangs in FastAPI
+    # Callers must use await self.process_message_async(...) instead.

@@ -178,25 +178,25 @@ interface Attendee {
   `,
   styles: [`
     .form-card {
-      background: rgba(30, 41, 59, 0.4);
-      backdrop-filter: blur(20px);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 20px;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
       padding: 28px;
       display: flex;
       flex-direction: column;
       gap: 20px;
-      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
       animation: slideUp 0.4s ease-out;
     }
 
+    
     @keyframes slideUp {
       from { opacity: 0; transform: translateY(20px); }
       to { opacity: 1; transform: translateY(0); }
     }
-
-    .form-header h2 { font-size: 1.8rem; font-weight: 700; margin: 0 0 6px 0; color: white; }
-    .form-header p { font-size: 0.95rem; color: #94a3b8; margin: 0; }
+    
+    .form-header h2 { font-size: 1.5rem; font-weight: 600; margin: 0 0 6px 0; color: #171717; }
+    .form-header p { font-size: 0.95rem; color: #6b7280; margin: 0; }
 
     .form-body { display: flex; flex-direction: column; gap: 14px; }
 
@@ -205,120 +205,73 @@ interface Attendee {
     .field.invalid label { color: #ef4444; }
     .field.invalid input, .field.invalid .search-wrapper input { border-color: #ef4444; box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.1); }
     .error-text { color: #ef4444; font-size: 0.72rem; margin-top: 4px; font-weight: 500; animation: fadeIn 0.3s ease; }
-    .eid-tag { color: #94a3b8; font-size: 0.75rem; font-weight: 400; margin-left: 6px; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
-    label { font-size: 0.82rem; font-weight: 600; color: #6366f1; text-transform: uppercase; letter-spacing: 0.05em; }
+    label { font-size: 0.85rem; font-weight: 600; color: #374151; margin-bottom: 4px; }
 
     input, select {
-      background: rgba(15, 23, 42, 0.6);
-      border: 1px solid #334155;
-      border-radius: 12px;
-      padding: 14px 16px;
-      color: white;
-      font-size: 1rem;
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: #171717;
+      font-size: 0.95rem;
       outline: none;
       transition: all 0.2s;
     }
 
-    input:focus, select:focus { border-color: #818cf8; background: rgba(15, 23, 42, 0.8); }
+
+    input:focus, select:focus { border-color: #10a37f; }
 
     .search-wrapper { position: relative; }
     .search-results {
-      position: absolute;
-      top: 100%; left: 0; right: 0;
-      background: #1e293b;
-      border: 1px solid #334155;
-      border-radius: 12px;
-      margin-top: 8px;
-      max-height: 250px;
-      overflow-y: auto;
-      z-index: 200;
-      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+      position: absolute; top: 100%; left: 0; right: 0;
+      background: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px;
+      margin-top: 4px; max-height: 200px; overflow-y: auto; z-index: 200;
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
     }
 
-    .result-item { padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #334155; }
-    .result-item:hover { background: #334155; }
-    .res-name { font-weight: 600; color: #f1f5f9; }
-    .res-meta { font-size: 0.75rem; color: #94a3b8; }
+
+    .result-item { padding: 10px 14px; cursor: pointer; border-bottom: 1px solid #e5e7eb; background: #ffffff; }
+    .result-item:hover { background: #f3f4f6; }
+    .res-name { font-weight: 600; color: #171717; }
+    .res-meta { font-size: 0.75rem; color: #6b7280; }
 
     .chip-selection {
-      display: flex;
-      gap: 6px;
-      padding: 6px;
-      background: rgba(15, 23, 42, 0.4);
-      border-radius: 12px;
-      border: 1px solid #334155;
-      width: 100%;
+      display: flex; gap: 6px; padding: 4px; background: #f3f4f6;
+      border-radius: 8px; border: 1px solid #e5e7eb; width: 100%;
     }
+
 
     .select-chip {
-      flex: 1;
-      background: transparent;
-      border: none;
-      color: #94a3b8;
-      padding: 12px 6px;
-      font-size: 0.85rem;
-      font-weight: 700;
-      border-radius: 8px;
-      cursor: pointer;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-      white-space: nowrap;
+      flex: 1; background: transparent; border: none; color: #6b7280;
+      padding: 8px 6px; font-size: 0.85rem; font-weight: 600; border-radius: 6px; cursor: pointer;
     }
-
-    .select-chip.active {
-      background: linear-gradient(135deg, #6366f1, #a855f7);
-      color: white;
-      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
-    }
-
-    .select-chip:hover:not(.active) {
-      background: rgba(255, 255, 255, 0.05);
-      color: #f1f5f9;
-    }
+    .select-chip.active { background: #ffffff; color: #171717; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
 
     .attendee-list { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
     .attendee-chip {
-      background: #334155;
-      padding: 8px 12px;
-      border-radius: 10px;
-      display: flex;
-      align-items: center;
-      gap: 15px;
-      border: 1px solid #475569;
+      background: #f3f4f6; padding: 6px 12px; border-radius: 8px;
+      display: flex; align-items: center; gap: 12px; border: 1px solid #e5e7eb;
     }
 
+
     .chip-info { display: flex; flex-direction: column; }
-    .chip-name { font-size: 0.88rem; font-weight: 600; color: white; }
-    .chip-email { font-size: 0.7rem; color: #94a3b8; }
+    .chip-name { font-size: 0.85rem; font-weight: 600; color: #171717; }
+    .chip-email { font-size: 0.7rem; color: #6b7280; }
     .chip-actions { display: flex; align-items: center; gap: 8px; }
 
-    .mini-select { padding: 4px 8px; font-size: 0.75rem; border-radius: 6px; }
+    .mini-select { padding: 2px 6px; font-size: 0.75rem; border-radius: 4px; }
     .remove-chip { background: transparent; color: #ef4444; border: none; font-size: 1.2rem; cursor: pointer; padding: 0 5px; }
 
     .submit-btn {
-      width: 100%;
-      background: linear-gradient(135deg, #6366f1, #a855f7);
-      color: white;
-      border: none;
-      padding: 18px;
-      border-radius: 16px;
-      font-size: 1.1rem;
-      font-weight: 700;
-      cursor: pointer;
-      transition: 0.2s;
-      margin-top: 10px;
+      width: 100%; background: #10a37f; color: white; border: none; padding: 14px;
+      border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: 0.2s; margin-top: 10px;
     }
-
     .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-    .submit-btn:hover:not(:disabled) { transform: translateY(-2px); filter: brightness(1.1); box-shadow: 0 10px 20px rgba(99, 102, 241, 0.4); }
+    .submit-btn:hover:not(:disabled) { background: #0e906f; }
 
     .error-msg { color: #ef4444; font-size: 0.85rem; text-align: center; margin-bottom: 10px; font-weight: 500; }
 
-    .clear-inp-btn {
-      position: absolute; right: 10px; top: 12px;
-      background: none; border: none; color: #94a3b8; font-size: 1.2rem; cursor: pointer;
-    }
-    .clear-inp-btn:hover { color: #ef4444; }
   `]
 })
 export class ScheduleFormComponent implements OnInit, OnChanges {
@@ -422,15 +375,27 @@ export class ScheduleFormComponent implements OnInit, OnChanges {
     this.teamSearchQuery = data.team || 'General';
     this.selectedTeam = data.team || 'General';
 
-    const attendeeIds: string[] = data.attendee_ids || [];
-    const attendeeNames: string[] = data.attendees || [];
-    this.selectedAttendees = attendeeIds.map((id, i) => ({
-      id: String(id),
-      name: attendeeNames[i] || `User ${id}`,
-      email: '',
-      department: '',
-      importance: 'required' as const,
-    }));
+    const rawAttendees: any[] = data.attendees || [];
+    this.selectedAttendees = rawAttendees.map((a, i) => {
+      if (typeof a === 'string') {
+        const attendeeIds = data.attendee_ids || [];
+        return {
+          id: String(attendeeIds[i] || ''),
+          name: a,
+          email: '',
+          department: '',
+          importance: 'required' as const,
+        };
+      } else {
+        return {
+          id: String(a.id || a.eid || ''),
+          name: a.name || '',
+          email: a.email || '',
+          department: a.department || '',
+          importance: a.type || a.importance || 'required',
+        };
+      }
+    });
 
     if (data.start) {
       try {
@@ -546,7 +511,7 @@ export class ScheduleFormComponent implements OnInit, OnChanges {
   showDatePicker(event: any) {
     if ('showPicker' in event.target) {
       try {
-        event.target.showPicker();
+        (event.target as any).showPicker();
       } catch (e) {
         console.warn('showPicker failed:', e);
       }
