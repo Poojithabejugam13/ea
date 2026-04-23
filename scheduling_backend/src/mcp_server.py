@@ -838,19 +838,6 @@ def delete_meeting(event_id: str, fingerprint: str = "") -> dict:
 
 # ---------------------------------------------------------------------------
 # Tool: notify_user
-# ---------------------------------------------------------------------------
-@mcp.tool()
-def notify_user(user_id: str, subject: str, body: str) -> dict:
-    """Send a notification to a user."""
-    _set_live_status("Sending notifications...")
-    return get_repo().send_notification(user_id, subject, body)
-
-
-if __name__ == "__main__":
-    mcp.run()
-# ---------------------------------------------------------------------------
-# Tool: notify_user
-# ---------------------------------------------------------------------------
 @mcp.tool()
 def notify_user(user_id: str, subject: str, body: str, interactive: bool = True) -> dict:
     """Send a notification to a user.
@@ -860,9 +847,11 @@ def notify_user(user_id: str, subject: str, body: str, interactive: bool = True)
     res = get_repo().send_notification(user_id, subject, body)
     
     if interactive:
-        # In a real app, this would trigger a push notification with actions.
-        # Here we just log it as interactive.
         res["interactive"] = True
         res["actions"] = ["OK", "Cancel"]
         
     return res
+
+
+if __name__ == "__main__":
+    mcp.run()

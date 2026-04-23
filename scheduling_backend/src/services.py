@@ -401,13 +401,15 @@ class AIAgent:
         self.repo = repository
         self.session_mgr = session_manager
         self.scheduler = SchedulingService(repository)
+        self.use_ai = False
         try:
-            self.gemini = RealGeminiAgent()
+            self.gemini = RealGeminiAgent(repository, session_manager)
             self.use_ai = True
         except Exception as e:
-            # Use ascii() to safely encode the error on Windows terminals (cp1252 chokes on emoji)
-            safe_err = ascii(str(e))
-            print(f"Vertex AI init failed: {safe_err}")
+            import logging
+            import traceback
+            logging.getLogger("agent.init").error("CRITICAL: Vertex AI init failed", exc_info=True)
+            self.use_ai = False
     # ──────────────────────────────────────────────────────────────────────
     # Public entry point
     # ──────────────────────────────────────────────────────────────────────
@@ -926,18 +928,18 @@ class AIAgent:
                 "titled_sections": {},
             }
 
-    def process_prompt(self, prompt: str, session_id: str = "default") -> dict:
+    async def process_prompt(self, prompt: str, session_id: str = "default") -> dict:
         self.session_mgr.set_status(session_id, "Processing request...")
         session_data = self.session_mgr.get_session(session_id) or {}
 
-        # ── Fast-path 1: deterministic 1:1 booking ───────────────────────
-        one_on_one_result = self._single_person_auto_book(prompt, session_data, session_id)
-        if one_on_one_result is not None:
-            session_data = self.session_mgr.get_session(session_id) or {}
-            session_data = self._append_history(session_data, prompt, one_on_one_result.get("response", ""))
-            self.session_mgr.set_session(session_id, session_data)
-            self.session_mgr.set_status(session_id, "Preparing final response...")
-            return one_on_one_result
+        # ── Fast-path 1: deterministic 1:1 booking (Disabled as per user request to involve LLM) ──
+        # one_on_one_result = self._single_person_auto_book(prompt, session_data, session_id)
+        # if one_on_one_result is not None:
+        #     session_data = self.session_mgr.get_session(session_id) or {}
+        #     session_data = self._append_history(session_data, prompt, one_on_one_result.get("response", ""))
+        #     self.session_mgr.set_session(session_id, session_data)
+        #     self.session_mgr.set_status(session_id, "Preparing final response...")
+        #     return one_on_one_result
 
         # ── Fast-path 2: structured form payload ─────────────────────────
         fast_result = self._process_structured_workflow(prompt, session_id)
@@ -984,7 +986,7 @@ class AIAgent:
 
         # ── 5. Call Gemini ─────────────────────────────────────────────────
         try:
-            response_text, updated_context = self.gemini.process_message(
+            response_text, updated_context = await self.gemini.process_message(
                 enriched_prompt,
                 context_history,
                 session_id=session_id,

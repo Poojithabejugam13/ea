@@ -103,7 +103,7 @@ async def process_agent_request(payload: dict = Body(...)):
     token = CALLER_USER_ID.set(user_id)
     try:
         agent = get_ai_agent()
-        result = agent.process_prompt(prompt, session_id=session_id)
+        result = await agent.process_prompt(prompt, session_id=session_id)
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
         logging.getLogger("agent.latency").info(
             "agent/process session=%s elapsed_ms=%s prompt_len=%s intent=%s",

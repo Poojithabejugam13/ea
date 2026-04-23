@@ -920,30 +920,6 @@ export class ChatComponent {
     );
   }
 
-  confirmAttendees(options: string[]) {
-    const selected = options.filter((_, i) => this.attendeeSelections[i].selected);
-    if (selected.length > 0) {
-       const lines = selected.map((opt) => opt.split('*').join(''));
-       this.sendAction(lines.join('\n'));
-    }
-  }
-
-  confirmSingleAttendeeDropdown() {
-    if (this.selectedAttendee) {
-       this.sendAction(`${this.selectedAttendee} [required]`);
-       this.selectedAttendee = '';
-    }
-  }
-
-  confirmSelectedCandidate(selectionMap: Record<string, string>) {
-    const eid = selectionMap[this.confirmCandidateChoice];
-    if (!eid) {
-      this.sendAction('Yes, proceed');
-      return;
-    }
-    this.sendAction(`Select attendee: ${eid}`);
-  }
-
   openMeetingEditor(meetingData: any) {
     const start = new Date(meetingData?.start || new Date().toISOString());
     const end = new Date(meetingData?.end || new Date(start.getTime() + 60 * 60000));
