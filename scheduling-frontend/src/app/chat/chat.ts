@@ -41,14 +41,14 @@ interface DisambigPerson {
             <div [class]="msg.role === 'user' ? 'msg user-msg' : 'msg assistant-msg'">
               <ng-container *ngIf="editingIndex !== i; else editTpl">
                 <div class="msg-content" [innerHTML]="formatMessage(msg.content)"></div>
-                <button *ngIf="msg.role === 'user'" class="edit-btn" (click)="startEdit(i, msg.content)" title="Edit message">
-                  ✎ Edit
+                <button *ngIf="msg.role === 'user'" class="edit-action" (click)="startEdit(i, msg.content)" title="Edit message">
+                  Edit
                 </button>
-                <button *ngIf="msg.role === 'assistant' && i > 0" class="regenerate-btn" (click)="regenerate(i)" title="Regenerate response">
-                  ↻ Resend
+                <button *ngIf="msg.role === 'assistant' && i > 0" class="edit-action" (click)="regenerate(i)" title="Regenerate response">
+                  Resend
                 </button>
-                <button *ngIf="msg.role === 'assistant' && msg.meetingData" class="edit-btn" (click)="openMeetingEditor(msg.meetingData)" title="Edit meeting">
-                  ✎ Edit Meeting
+                <button *ngIf="msg.role === 'assistant' && msg.meetingData" class="edit-action" (click)="openMeetingEditor(msg.meetingData)" title="Edit meeting">
+                  Edit Meeting
                 </button>
               </ng-container>
               
@@ -56,15 +56,15 @@ interface DisambigPerson {
                 <div class="edit-area">
                   <textarea [(ngModel)]="editPrompt" rows="3"></textarea>
                   <div class="edit-actions">
-                    <button class="save-btn" (click)="saveEdit(i)">Save & Submit</button>
-                    <button class="cancel-btn" (click)="cancelEdit()">Cancel</button>
+                    <button class="primary-btn small" (click)="saveEdit(i)">Save & Submit</button>
+                    <button class="ghost-btn small" (click)="cancelEdit()">Cancel</button>
                   </div>
                 </div>
               </ng-template>
                         
               <!-- Join Links -->
               <div *ngFor="let link of msg.links" class="join-box">
-                🔗 <b>Join Meeting Link</b><br>
+                <b>Join Meeting</b><br>
                 <a [href]="link" target="_blank">{{link}}</a>
               </div>
 
@@ -86,14 +86,13 @@ interface DisambigPerson {
                             [class.chip-selected]="isChipSelected(section, opt)"
                             (click)="onChipToggle(section, opt, msg)"
                           >
-                            <span class="chip-check" *ngIf="isChipSelected(section, opt)">✓</span>
                             {{ cleanOpt(opt) }}
                           </button>
                         </div>
-                        <p class="multi-hint">Select one or more · tap Everyone to let any participant present</p>
+                        <p class="multi-hint">Select one or more participants</p>
                       </ng-container>
 
-                      <!-- SINGLE-SELECT radio-ring buttons -->
+                      <!-- SINGLE-SELECT buttons -->
                       <ng-container *ngIf="!isMultiSection(section) && !isTextSection(section)">
                         <div class="stacked-buttons">
                           <button 
@@ -102,9 +101,6 @@ interface DisambigPerson {
                             [class.selected]="opt.startsWith('✅')"
                             (click)="onCardTap(section, opt, msg)"
                           >
-                            <span class="radio-ring">
-                              <span class="radio-dot" *ngIf="opt.startsWith('✅')"></span>
-                            </span>
                             <span class="btn-label">{{ cleanOpt(opt) }}</span>
                           </button>
                         </div>
@@ -129,18 +125,18 @@ interface DisambigPerson {
                   <!-- Confirm & Book (disabled until all sections have a selection) -->
                   <div class="confirm-row">
                     <button 
-                      class="confirm-btn" 
+                      class="primary-btn full" 
                       [disabled]="!isGatheringComplete(msg)"
                       (click)="onConfirmCard(msg)"
                     >
-                      ✅ Confirm & Book
+                      Confirm & Book
                     </button>
                   </div>
                 </div>
 
-                <!-- CONFLICT: alternates stacked + keep-original button at bottom -->
+                <!-- CONFLICT -->
                 <div *ngIf="msg.optionType === 'conflict'" class="card-wrapper">
-                  <p class="section-header">📅 Available Alternatives</p>
+                  <p class="section-header">Available Alternatives</p>
                   <div class="stacked-buttons">
                     <button 
                       *ngFor="let opt of (msg.options || [])" 
@@ -153,23 +149,23 @@ interface DisambigPerson {
                   </div>
                 </div>
 
-                <!-- EDIT GRID (Post-booking 2-column grid) -->
+                <!-- EDIT GRID (Post-booking) -->
                 <div *ngIf="msg.optionType === 'edit_grid'" class="edit-grid">
                   <button 
                     *ngFor="let opt of msg.options" 
-                    class="edit-btn"
+                    class="ghost-btn small"
                     (click)="handleEditTapped(opt, msg.meetingData)"
                   >
                     {{ opt }}
                   </button>
                 </div>
 
-                <!-- DISAMBIGUATION CARD — rich person picker -->
+                <!-- DISAMBIGUATION CARD -->
                 <div *ngIf="msg.intent === 'attendee_disambiguation' || msg.optionType === 'attendee_disambiguation'" class="disambig-card">
                   <div class="disambig-header">
-                    <span class="disambig-title">👥 Select Attendee</span>
-                    <button class="toggle-mode-btn" (click)="toggleDisambigMode()">
-                      {{ disambigBulkMode ? '☑ Bulk Mode' : '◻ Single Mode' }}
+                    <span class="disambig-title">Select Attendee</span>
+                    <button class="ghost-btn tiny" (click)="toggleDisambigMode()">
+                      {{ disambigBulkMode ? 'Bulk' : 'Single' }}
                     </button>
                   </div>
                   <div class="disambig-grid">
@@ -183,13 +179,11 @@ interface DisambigPerson {
                       <div class="person-info">
                         <span class="person-name">{{ p.name }}</span>
                         <span class="person-dept">{{ p.dept }}</span>
-                        <span class="person-eid">EID {{ p.eid }}</span>
                       </div>
-                      <div *ngIf="isPersonSelected(p)" class="person-check">✓</div>
                     </button>
                   </div>
                   <button
-                    class="disambig-confirm-btn"
+                    class="primary-btn full mt-1"
                     [disabled]="selectedDisambigPeople.size === 0"
                     (click)="confirmDisambig(msg)"
                   >
@@ -197,8 +191,8 @@ interface DisambigPerson {
                   </button>
                 </div>
 
-                <!-- GENERAL (stacked fallback for any other option type) -->
-                <div *ngIf="msg.intent !== 'attendee_disambiguation' && msg.optionType !== 'attendee_disambiguation' && !['gathering_card', 'edit_grid', 'conflict'].includes(msg.optionType || '') && (msg.options?.length || 0) > 0" class="stacked-buttons" style="margin-top: 12px;">
+                <!-- GENERAL fallback -->
+                <div *ngIf="msg.intent !== 'attendee_disambiguation' && msg.optionType !== 'attendee_disambiguation' && !['gathering_card', 'edit_grid', 'conflict'].includes(msg.optionType || '') && (msg.options?.length || 0) > 0" class="stacked-buttons mt-1">
                   <button 
                     *ngFor="let opt of msg.options" 
                     class="choice-btn"
@@ -222,9 +216,6 @@ interface DisambigPerson {
             </div>
             <div class="thinking-text">
               {{ loadingMessage }}
-              <span class="dots">
-                <span>.</span><span>.</span><span>.</span>
-              </span>
             </div>
           </div>
         </div>
@@ -234,7 +225,7 @@ interface DisambigPerson {
             type="text" 
             [(ngModel)]="prompt" 
             (keyup.enter)="sendMessage()" 
-            placeholder="Type your response here..."
+            placeholder="Type your request..."
           >
           <button class="send-btn" (click)="sendMessage()" [disabled]="!prompt.trim()">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
@@ -247,25 +238,68 @@ interface DisambigPerson {
                 (document:mousemove)="onDrag($event)" 
                 (document:mouseup)="onDragEnd()"
                 style="cursor: move;">Edit Meeting</h3>
-            <label>Title</label>
-            <input [(ngModel)]="meetingEdit.subject" type="text">
-            <label>Date</label>
-            <input [(ngModel)]="meetingEdit.date" type="date">
-            <label>Time</label>
-            <input [(ngModel)]="meetingEdit.time" type="time">
-            <label>Duration (minutes)</label>
-            <input [(ngModel)]="meetingEdit.duration" type="number" min="30" step="15">
+            
+            <div class="form-grid">
+              <div class="form-field">
+                <label>Title</label>
+                <input [(ngModel)]="meetingEdit.subject" type="text">
+              </div>
+              <div class="form-field">
+                <label>Location</label>
+                <input [(ngModel)]="meetingEdit.location" type="text" list="location-opts">
+                <datalist id="location-opts">
+                  <option value="Virtual"></option>
+                  <option value="Nilgiri"></option>
+                  <option value="Himalaya"></option>
+                </datalist>
+              </div>
+              <div class="form-field">
+                <label>Date</label>
+                <input [(ngModel)]="meetingEdit.date" type="date">
+              </div>
+              <div class="form-field">
+                <label>Time</label>
+                <input [(ngModel)]="meetingEdit.time" type="time">
+              </div>
+              <div class="form-field">
+                <label>Duration</label>
+                <select [(ngModel)]="meetingEdit.duration">
+                  <option [value]="30">30 min</option>
+                  <option [value]="45">45 min</option>
+                  <option [value]="60">1 hour</option>
+                  <option [value]="90">1.5 hours</option>
+                  <option [value]="120">2 hours</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label>Presenter</label>
+                <select [(ngModel)]="meetingEdit.presenter">
+                   <option value="">Organiser</option>
+                   <option *ngFor="let p of meetingEdit.attendeeNames" [value]="p">{{ p }}</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label>Recurrence</label>
+                <select [(ngModel)]="meetingEdit.recurrence">
+                  <option value="none">One-time</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="biweekly">Bi-weekly</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+              </div>
+              <div class="form-field" *ngIf="meetingEdit.recurrence !== 'none'">
+                <label>Series End Date</label>
+                <input [(ngModel)]="meetingEdit.recurrence_end_date" type="date">
+              </div>
+            </div>
+
             <label>Agenda</label>
-            <textarea [(ngModel)]="meetingEdit.agenda" rows="3"></textarea>
-            <label>Location</label>
-            <input [(ngModel)]="meetingEdit.location" type="text">
-            <label>Presenter</label>
-            <input [(ngModel)]="meetingEdit.presenter" type="text">
-            <label>Recurrence</label>
-            <input [(ngModel)]="meetingEdit.recurrence" type="text">
+            <textarea [(ngModel)]="meetingEdit.agenda" rows="2"></textarea>
+
             <div class="edit-actions">
-              <button class="cancel-btn" (click)="closeMeetingEditor()">Cancel</button>
-              <button class="save-btn" (click)="saveMeetingEditor()">Save Changes</button>
+              <button class="ghost-btn" (click)="closeMeetingEditor()">Cancel</button>
+              <button class="primary-btn" (click)="saveMeetingEditor()">Save Changes</button>
             </div>
           </div>
         </div>
@@ -274,293 +308,85 @@ interface DisambigPerson {
     </div>
   `,
   styles: [`
-    .chat-wrapper { flex: 1; display: flex; justify-content: center; background: #020617; color: #f8fafc; height: 100%; overflow: hidden; }
-    .chat-container { width: 100%; max-width: 800px; display: flex; flex-direction: column; height: 100%; }
-    .messages { flex: 1; overflow-y: auto; padding: 30px 20px; display: flex; flex-direction: column; gap: 20px; scroll-behavior: smooth;}
+    .chat-wrapper { flex: 1; display: flex; justify-content: center; background: #ffffff; color: #1e293b; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .chat-container { width: 100%; max-width: 850px; display: flex; flex-direction: column; height: 100%; background: #ffffff; border-left: 1px solid #f1f5f9; border-right: 1px solid #f1f5f9; }
+    .messages { flex: 1; overflow-y: auto; padding: 25px; display: flex; flex-direction: column; gap: 24px; scroll-behavior: smooth; }
     .message-row { display: flex; flex-direction: column; width: 100%; }
-    .msg { padding: 12px 18px; border-radius: 12px; max-width: 85%; font-size: 0.95rem; line-height: 1.5; white-space: pre-wrap; position: relative; }
-    .user-msg { background: #1e293b; color: #f1f5f9; align-self: flex-end; border-bottom-right-radius: 2px; }
-    .assistant-msg { background: rgba(30, 41, 59, 0.5); border: 1px solid rgba(255, 255, 255, 0.05); color: #cbd5e1; align-self: flex-start; max-width: 85%; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
-    ::ng-deep .assistant-msg h3 { margin-top: 0; }
-    ::ng-deep .assistant-msg p { margin: 0 0 10px 0; }
-    ::ng-deep .assistant-msg strong { color: #818cf8; }
-
-    /* ── Multi-select chip area ── */
-    .multi-chip-area { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
-    .chip-btn {
-      display: inline-flex; align-items: center; gap: 6px;
-      padding: 6px 14px; border-radius: 999px;
-      border: 1px solid rgba(255,255,255,0.15);
-      background: rgba(30, 41, 59, 0.5);
-      color: #cbd5e1; font-size: 0.85rem; font-weight: 500;
-      cursor: pointer; transition: all 0.18s;
-    }
-    .chip-btn:hover { border-color: #818cf8; color: #e0e7ff; background: rgba(99,102,241,0.15); }
-    .chip-btn.chip-selected { background: rgba(99,102,241,0.25); border-color: #6366f1; color: #fff; }
-    .chip-check { font-size: 0.75rem; color: #a5b4fc; }
-    .multi-hint { font-size: 0.72rem; color: #64748b; margin-top: 6px; margin-bottom: 0; }
-
-    .join-box { background: linear-gradient(135deg, #0f172a, #1e293b); border: 1px solid #6366f1; border-radius: 12px; padding: 14px 20px; margin: 10px 0 6px 0; width: fit-content; }
-    .join-box a { color: #818cf8; font-weight: 600; text-decoration: none; }
-    .join-box a:hover { color: #a5b4fc; }
-
-    .input-area { padding: 20px; background: #020617; border-top: 1px solid #1e293b; display: flex; gap: 12px; align-items: center; }
-    input { flex: 1; padding: 14px 20px; border-radius: 12px; border: 1px solid #334155; background: #0f172a; color: white; font-size: 1rem; outline: none; transition: 0.2s; }
-    input:focus { border-color: #6366f1; }
     
-    .send-btn { 
-      background: #6366f1; 
-      color: white; 
-      border: none; 
-      width: 48px; height: 48px; 
-      border-radius: 12px; 
-      display: flex; align-items: center; justify-content: center; 
-      cursor: pointer; transition: 0.2s; 
-    }
-    .send-btn:hover:not(:disabled) { background: #818cf8; transform: scale(1.05); }
-    .send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .msg { padding: 16px 20px; border-radius: 16px; max-width: 85%; font-size: 0.95rem; line-height: 1.6; white-space: pre-wrap; position: relative; }
+    .user-msg { background: #2563eb; color: white; align-self: flex-end; border-bottom-right-radius: 4px; box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.2); }
+    .assistant-msg { background: #f8fafc; border: 1px solid #e2e8f0; color: #334155; align-self: flex-start; border-bottom-left-radius: 4px; }
     
-    .thinking-wrapper { display: flex; align-items: center; gap: 12px; margin-top: 15px; padding-left: 10px; }
-    .spinner-rotate { width: 22px; height: 22px; color: #6366f1; animation: spin 1s linear infinite; }
-    .thinking-text { font-size: 0.9rem; color: #94a3b8; font-weight: 500; }
-    .dots span { animation: pulse 1.4s infinite; opacity: 0; }
-    .dots span:nth-child(2) { animation-delay: 0.2s; }
-    .dots span:nth-child(3) { animation-delay: 0.4s; }
+    .edit-action { background: none; border: none; color: #64748b; cursor: pointer; font-size: 0.75rem; font-weight: 600; padding: 4px 8px; margin-top: 8px; transition: color 0.2s; }
+    .edit-action:hover { color: #2563eb; }
 
+    .join-box { background: #f1f5f9; border-radius: 12px; padding: 14px 18px; margin: 12px 0; border: 1px solid #e2e8f0; }
+    .join-box b { color: #1e293b; display: block; margin-bottom: 4px; }
+    .join-box a { color: #2563eb; font-weight: 600; text-decoration: none; word-break: break-all; }
+    .join-box a:hover { text-decoration: underline; }
+
+    .input-area { padding: 20px 25px; background: #ffffff; border-top: 1px solid #f1f5f9; display: flex; gap: 12px; align-items: center; }
+    .input-area input { flex: 1; padding: 14px 22px; border-radius: 12px; border: 1px solid #e2e8f0; background: #fcfcfc; font-size: 1rem; outline: none; transition: all 0.2s; color: #1e293b; }
+    .input-area input:focus { border-color: #2563eb; background: #ffffff; box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.08); }
+    
+    .send-btn { background: #2563eb; color: white; border: none; width: 48px; height: 48px; border-radius: 12px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s; }
+    .send-btn:hover:not(:disabled) { background: #1d4ed8; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2); }
+    .send-btn:disabled { background: #cbd5e1; cursor: not-allowed; }
+
+    .thinking-wrapper { display: flex; align-items: center; gap: 12px; padding: 10px; color: #64748b; font-size: 0.9rem; font-weight: 500; }
+    .spinner-rotate { width: 20px; height: 20px; color: #2563eb; animation: spin 1s linear infinite; }
+
+    .card-wrapper { margin-top: 16px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }
+    .section-header { font-size: 0.75rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 14px; }
+    
+    .stacked-buttons { display: flex; flex-direction: column; gap: 10px; }
+    .choice-btn { 
+      background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 18px; 
+      font-size: 0.95rem; font-weight: 500; color: #475569; text-align: left; cursor: pointer; transition: all 0.2s; 
+    }
+    .choice-btn:hover { border-color: #2563eb; background: #f0f7ff; color: #2563eb; }
+    .choice-btn.selected { border-color: #2563eb; background: #eff6ff; color: #2563eb; font-weight: 600; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1); }
+
+    .multi-chip-area { display: flex; flex-wrap: wrap; gap: 10px; }
+    .chip-btn { padding: 8px 16px; border-radius: 20px; border: 1px solid #e2e8f0; background: #ffffff; font-size: 0.9rem; font-weight: 500; color: #475569; cursor: pointer; transition: all 0.2s; }
+    .chip-btn:hover { border-color: #2563eb; color: #2563eb; background: #f0f7ff; }
+    .chip-btn.chip-selected { background: #2563eb; border-color: #2563eb; color: #ffffff; box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2); }
+    .multi-hint { font-size: 0.75rem; color: #94a3b8; margin-top: 10px; font-weight: 500; }
+
+    .primary-btn { background: #2563eb; color: white; border: none; padding: 14px 24px; border-radius: 10px; font-weight: 600; cursor: pointer; transition: all 0.2s; font-size: 0.95rem; }
+    .primary-btn:hover:not(:disabled) { background: #1d4ed8; box-shadow: 0 4px 15px rgba(37, 99, 235, 0.25); }
+    .primary-btn.full { width: 100%; }
+    .primary-btn.small { padding: 8px 16px; font-size: 0.85rem; }
+    .primary-btn:disabled { background: #cbd5e1; cursor: not-allowed; }
+
+    .ghost-btn { background: #ffffff; border: 1px solid #e2e8f0; color: #475569; padding: 14px 24px; border-radius: 10px; font-weight: 600; cursor: pointer; transition: all 0.2s; font-size: 0.95rem; }
+    .ghost-btn:hover { background: #f8fafc; color: #1e293b; border-color: #cbd5e1; }
+    .ghost-btn.small { padding: 8px 16px; font-size: 0.85rem; }
+    .ghost-btn.tiny { padding: 4px 10px; font-size: 0.75rem; border-radius: 6px; }
+
+    .editor-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.2); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; z-index: 2000; }
+    .editor-card { width: min(650px, 95vw); background: #ffffff; border-radius: 24px; padding: 32px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.15); display: flex; flex-direction: column; gap: 20px; border: 1px solid #f1f5f9; }
+    .editor-card h3 { margin: 0; font-size: 1.5rem; font-weight: 800; color: #0f172a; border-bottom: 1px solid #f1f5f9; padding-bottom: 20px; }
+    
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .form-field { display: flex; flex-direction: column; gap: 8px; }
+    .form-field label { font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.025em; }
+    .form-field input, .form-field select, .editor-card textarea { padding: 12px 16px; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 0.95rem; outline: none; transition: all 0.2s; color: #1e293b; background: #fcfcfc; }
+    .form-field input:focus, .form-field select:focus, .editor-card textarea:focus { border-color: #2563eb; background: #ffffff; box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.08); }
+
+    .edit-actions { display: flex; gap: 14px; justify-content: flex-end; margin-top: 10px; }
+    .mt-1 { margin-top: 16px; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-    @keyframes pulse { 0% { opacity: 0; } 50% { opacity: 1; } 100% { opacity: 0; } }
 
-    .edit-btn { 
-      background: rgba(255, 255, 255, 0.05); 
-      border: 1px solid rgba(255, 255, 255, 0.1); 
-      color: #94a3b8; 
-      cursor: pointer; 
-      padding: 4px 10px; 
-      border-radius: 6px;
-      font-size: 0.75rem; 
-      font-weight: 500;
-      transition: all 0.2s; 
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      margin-top: 8px;
-    }
-    .edit-btn:hover { background: rgba(99, 102, 241, 0.2); border-color: #6366f1; color: white; }
-
-    .edit-area { display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 300px; }
-    .edit-area textarea { background: #0f172a; border: 1px solid #334155; color: white; padding: 10px; border-radius: 8px; font-family: inherit; resize: vertical; }
-    .edit-actions { display: flex; gap: 8px; justify-content: flex-end; }
-    .save-btn { background: #6366f1; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
-    .cancel-btn { background: none; border: 1px solid #334155; color: #94a3b8; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
-
-    .regenerate-btn { 
-      background: rgba(255, 255, 255, 0.05); 
-      border: 1px solid rgba(255, 255, 255, 0.1); 
-      color: #94a3b8; 
-      cursor: pointer; 
-      padding: 4px 10px; 
-      border-radius: 6px;
-      font-size: 0.75rem; 
-      font-weight: 500;
-      transition: all 0.2s; 
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      margin-top: 10px;
-    }
-    .regenerate-btn:hover { background: rgba(99, 102, 241, 0.2); border-color: #6366f1; color: white; }
-
-    .interactive-area { margin-top: 15px; }
-    .tap-label { color: #94a3b8; font-size: 0.78rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px; margin-top: 15px; }
-    
-    .options-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
-    .opt-btn { 
-      background: rgba(30, 41, 59, 0.4); 
-      color: #f1f5f9; 
-      border: 1px solid rgba(255, 255, 255, 0.1); 
-      border-radius: 14px; 
-      padding: 14px 18px; 
-      font-size: 0.95rem; 
-      font-weight: 500; 
-      cursor: pointer; 
-      text-align: left; 
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-      backdrop-filter: blur(8px);
-    }
-    .opt-btn:hover { background: rgba(99, 102, 241, 0.2); border-color: #6366f1; color: white; transform: translateY(-2px); box-shadow: 0 8px 16px rgba(99, 102, 241, 0.3); }
-    .slot-btn { border-color: rgba(99, 102, 241, 0.35); background: rgba(99, 102, 241, 0.08); }
-    .slot-btn:hover { background: rgba(99, 102, 241, 0.25); border-color: #818cf8; }
-    .continue-btn { background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.45); color: #6ee7b7; border-radius: 14px; padding: 14px 18px; font-size: 0.95rem; font-weight: 600; cursor: pointer; text-align: left; transition: all 0.2s; }
-    .continue-btn:hover { background: rgba(16, 185, 129, 0.25); border-color: #10b981; color: white; transform: translateY(-2px); box-shadow: 0 8px 16px rgba(16, 185, 129, 0.3); }
-    ::ng-deep .box-line { font-family: 'Courier New', monospace; font-size: 0.85rem; color: #94a3b8; display: block; white-space: pre; letter-spacing: 0; }
-
-    .dup-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
-    .dup-update { background: linear-gradient(135deg, #0f4c75, #1b6ca8); color: white; border: none; border-radius: 8px; padding: 12px; font-weight: 600; cursor: pointer; }
-    .dup-del { background: linear-gradient(135deg, #7f1d1d, #b91c1c); color: white; border: none; border-radius: 8px; padding: 12px; font-weight: 600; cursor: pointer; }
-    .dup-new { background: linear-gradient(135deg, #14532d, #15803d); color: white; border: none; border-radius: 8px; padding: 12px; font-weight: 600; cursor: pointer; }
-    
-    .attendee-dropdown {
-      width: 100%;
-      background: #0f172a;
-      border: 1px solid #334155;
-      color: #f1f5f9;
-      padding: 8px;
-      border-radius: 12px;
-      font-size: 0.95rem;
-      outline: none;
-      transition: 0.2s;
-    }
-    .attendee-dropdown option {
-      padding: 12px 16px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-      cursor: pointer;
-    }
-    .attendee-dropdown option:checked {
-      background: linear-gradient(135deg, rgba(99, 102, 241, 0.4), rgba(99, 102, 241, 0.2));
-      color: white;
-    }
-    .attendee-dropdown:focus { border-color: #6366f1; }
-    .help-text {
-      font-size: 0.75rem;
-      color: #64748b;
-      margin: 6px 0 0 4px;
-      font-style: italic;
-    }
-    .attendee-row { 
-      display: flex; align-items: center; gap: 12px;
-      background: rgba(30, 41, 59, 0.3); 
-      border: 1px solid rgba(255, 255, 255, 0.05);
-      padding: 12px 18px; 
-      border-radius: 12px; 
-      margin-bottom: 10px; 
-      transition: all 0.2s;
-    }
-    .attendee-row:hover { background: rgba(99, 102, 241, 0.1); border-color: rgba(99, 102, 241, 0.3); }
-    .attendee-row label { display: flex; align-items: center; gap: 12px; cursor: pointer; flex: 1; font-weight: 500; min-width: 0; }
-    .attendee-row select { 
-      background: #0f172a; 
-      border: 1px solid #334155; 
-      color: #94a3b8; 
-      padding: 6px 10px; 
-      border-radius: 8px; 
-      outline: none; 
-      font-size: 0.85rem;
-      transition: 0.2s;
-    }
-    .attendee-row select:focus { border-color: #6366f1; color: white; }
-    .confirm-btn { 
-      background: linear-gradient(135deg, #6366f1, #4f46e5); 
-      color: white; 
-      border: none; 
-      border-radius: 12px; 
-      padding: 14px 20px; 
-      font-weight: 600; 
-      cursor: pointer; 
-      width: 100%; 
-      margin-top: 15px; 
-      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
-      transition: 0.2s;
-    }
-    .confirm-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 15px rgba(99, 102, 241, 0.4); }
-    .editor-overlay { position: fixed; inset: 0; background: rgba(2,6,23,0.75); display: flex; align-items: center; justify-content: center; z-index: 2000; }
-    .editor-card { width: min(560px, 90vw); background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
-    .editor-card h3 { margin: 0 0 8px 0; color: #f8fafc; }
-    .editor-card label { font-size: 0.8rem; color: #94a3b8; }
-    .editor-card textarea, .editor-card input { background: #020617; border: 1px solid #334155; color: #fff; border-radius: 8px; padding: 10px; }
-
-    /* ── Disambiguation Card ── */
-    .disambig-card { margin-top: 14px; background: rgba(15,23,42,0.8); border: 1px solid rgba(99,102,241,0.3); border-radius: 16px; padding: 16px; }
-    .disambig-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-    .disambig-title { font-size: 0.85rem; font-weight: 700; color: #a5b4fc; letter-spacing: 0.05em; text-transform: uppercase; }
-    .toggle-mode-btn {
-      font-size: 0.78rem; font-weight: 600; padding: 5px 12px; border-radius: 999px;
-      border: 1px solid rgba(99,102,241,0.5); background: rgba(99,102,241,0.12); color: #a5b4fc;
-      cursor: pointer; transition: all 0.18s;
-    }
-    .toggle-mode-btn:hover { background: rgba(99,102,241,0.25); color: #fff; }
-    .disambig-grid { display: flex; flex-direction: column; gap: 8px; }
-    .person-card {
-      display: flex; align-items: center; gap: 12px;
-      background: rgba(30,41,59,0.5); border: 1px solid rgba(255,255,255,0.07);
-      border-radius: 12px; padding: 12px 14px; cursor: pointer;
-      transition: all 0.18s; text-align: left; width: 100%;
-      position: relative;
-    }
-    .person-card:hover { border-color: rgba(99,102,241,0.5); background: rgba(99,102,241,0.1); }
-    .person-card.person-selected { border-color: #6366f1; background: rgba(99,102,241,0.18); }
-    .person-avatar {
-      width: 40px; height: 40px; border-radius: 50%;
-      background: linear-gradient(135deg, #4f46e5, #7c3aed);
-      display: flex; align-items: center; justify-content: center;
-      font-size: 1rem; font-weight: 700; color: white; flex-shrink: 0;
-    }
-    .person-info { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
-    .person-name { font-size: 0.92rem; font-weight: 600; color: #f1f5f9; }
-    .person-dept {
-      display: inline-block; font-size: 0.72rem; font-weight: 600;
-      color: #818cf8; background: rgba(99,102,241,0.15);
-      border: 1px solid rgba(99,102,241,0.3); border-radius: 999px;
-      padding: 1px 8px; margin-top: 2px; width: fit-content;
-    }
-    .person-eid { font-size: 0.72rem; color: #475569; margin-top: 1px; }
-    .person-check {
-      position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
-      width: 22px; height: 22px; border-radius: 50%;
-      background: #6366f1; color: white; font-size: 0.8rem;
-      display: flex; align-items: center; justify-content: center; font-weight: 700;
-    }
-    .disambig-confirm-btn {
-      width: 100%; margin-top: 12px; padding: 11px;
-      background: linear-gradient(135deg, #4f46e5, #6366f1);
-      color: white; border: none; border-radius: 10px;
-      font-weight: 700; font-size: 0.9rem; cursor: pointer; transition: 0.18s;
-    }
-    .disambig-confirm-btn:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); }
-    .disambig-confirm-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-    
-    .suggestion-dropdown {
-      background: rgba(15, 23, 42, 0.85);
-      backdrop-filter: blur(12px);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 12px;
-      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
-      z-index: 2000;
-      max-height: 200px;
-      overflow-y: auto;
-      padding: 8px;
-    }
-    .suggestion-item {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 10px 14px;
-      border-radius: 8px;
-      cursor: pointer;
-      transition: 0.2s;
-    }
-    .suggestion-item:hover {
-      background: rgba(99, 102, 241, 0.15);
-    }
-    .suggestion-icon {
-      font-size: 1.2rem;
-      width: 24px;
-      display: flex;
-      justify-content: center;
-      color: #818cf8;
-    }
-    .suggestion-info {
-      display: flex;
-      flex-direction: column;
-    }
-    .suggestion-label {
-      font-size: 0.9rem;
-      font-weight: 500;
-      color: #f1f5f9;
-    }
-    .suggestion-sublabel {
-      font-size: 0.75rem;
-      color: #94a3b8;
-    }
+    .disambig-card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 20px; padding: 24px; margin-top: 16px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05); }
+    .disambig-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    .disambig-title { font-weight: 800; font-size: 0.85rem; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em; }
+    .person-card { display: flex; align-items: center; gap: 14px; padding: 12px 16px; border: 1px solid #f1f5f9; border-radius: 14px; cursor: pointer; text-align: left; width: 100%; background: #ffffff; transition: all 0.2s; }
+    .person-card:hover { border-color: #2563eb; background: #f0f7ff; }
+    .person-card.person-selected { border-color: #2563eb; background: #eff6ff; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1); }
+    .person-avatar { width: 40px; height: 40px; border-radius: 12px; background: #eff6ff; color: #2563eb; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1rem; }
+    .person-name { font-size: 1rem; font-weight: 700; color: #0f172a; }
+    .person-dept { font-size: 0.8rem; color: #64748b; font-weight: 500; }
   `]
 })
 export class ChatComponent {
@@ -921,7 +747,8 @@ export class ChatComponent {
   }
 
   confirmAttendees(options: string[]) {
-    const selected = options.filter((_, i) => this.attendeeSelections[i].selected);
+    // Filter out any blank entries and send confirmed attendees as action
+    const selected = options.filter(opt => opt && opt.trim().length > 0);
     if (selected.length > 0) {
        const lines = selected.map((opt) => opt.split('*').join(''));
        this.sendAction(lines.join('\n'));
@@ -948,6 +775,11 @@ export class ChatComponent {
     const start = new Date(meetingData?.start || new Date().toISOString());
     const end = new Date(meetingData?.end || new Date(start.getTime() + 60 * 60000));
     const duration = Math.max(30, Math.round((end.getTime() - start.getTime()) / 60000));
+    
+    // Extract attendee names for the presenter dropdown
+    const attendees = meetingData?.attendees || [];
+    const attendeeNames = attendees.map((a: any) => typeof a === 'string' ? a : (a.name || a.displayName || a.id));
+
     this.meetingEdit = {
       event_id: meetingData?.event_id || '',
       fingerprint: meetingData?.fingerprint || '',
@@ -956,6 +788,8 @@ export class ChatComponent {
       location: meetingData?.location || 'Virtual',
       presenter: meetingData?.presenter || '',
       recurrence: meetingData?.recurrence || 'none',
+      recurrence_end_date: meetingData?.recurrence_end_date || '',
+      attendeeNames,
       date: start.toISOString().slice(0, 10),
       time: `${start.getHours().toString().padStart(2, '0')}:${start.getMinutes().toString().padStart(2, '0')}`,
       duration,

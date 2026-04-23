@@ -37,6 +37,7 @@ def insert_meeting(
     meeting_title: str,
     meeting_agenda: str = "",
     participants: list[str] | None = None,
+    recurrence_end_date: str = "",
 ) -> str | None:
     """
     Insert a row into the `meetings` table.
@@ -59,9 +60,9 @@ def insert_meeting(
     sql = """
         INSERT INTO meetings
             (id, organiser_name, start_date, end_date,
-             meeting_title, meeting_agenda, participants)
+             meeting_title, meeting_agenda, participants, recurrence_end_date)
         VALUES
-            (%s, %s, %s, %s, %s, %s, %s)
+            (%s, %s, %s, %s, %s, %s, %s, %s)
     """
 
     try:
@@ -75,6 +76,7 @@ def insert_meeting(
             meeting_title,
             meeting_agenda,
             participants_json,
+            recurrence_end_date,
         ))
         conn.commit()
         cur.close()
@@ -93,6 +95,7 @@ def update_meeting_db(
     start_date: str | None = None,
     end_date: str | None = None,
     participants: list[str] | None = None,
+    recurrence_end_date: str | None = None,
 ) -> bool:
     """Update existing meeting in the PostgreSQL DB."""
     fields = []
