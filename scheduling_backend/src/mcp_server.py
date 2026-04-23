@@ -11,7 +11,8 @@ from .models import User, Event, EventTime, AttendeeEntry, EmailAddress, OnlineM
 from .session_manager import SessionManager
 from .db_client import insert_meeting, update_meeting_db, delete_meeting_db
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import re
 from contextvars import ContextVar
 
@@ -25,6 +26,36 @@ def set_current_session_id(session_id: str):
 
 def reset_current_session_id(token):
     CURRENT_SESSION_ID.reset(token)
+
+
+def _parse_iso(iso_s: str) -> datetime:
+    if not iso_s:
+        return datetime.now(timezone.utc)
+    
+    # Handle custom UI format: "20 Apr 2026, 04:00 PM Asia/Kolkata"
+    if "," in iso_s and ("AM" in iso_s or "PM" in iso_s):
+        try:
+            # Strip timezone name at the end if present
+            clean_s = iso_s
+            tz_part = "UTC"
+            if "Asia/Kolkata" in iso_s:
+                clean_s = iso_s.replace("Asia/Kolkata", "").strip()
+                tz_part = "Asia/Kolkata"
+            
+            dt = datetime.strptime(clean_s, "%d %b %Y, %I:%M %p")
+            return dt.replace(tzinfo=ZoneInfo(tz_part)).astimezone(timezone.utc)
+        except Exception as e:
+            print(f"DEBUG: Failed to parse custom format '{iso_s}': {e}")
+
+    # Standard ISO parsing
+    try:
+        dt = datetime.fromisoformat(iso_s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception as e:
+        print(f"DEBUG: Failed to parse ISO format '{iso_s}': {e}")
+        return datetime.now(timezone.utc)
 
 
 def _set_live_status(message: str):
@@ -287,24 +318,16 @@ def find_available_room(participant_count: int, start: str, end: str) -> str:
 @mcp.tool()
 def check_conflict_detail(user_id: str, start: str, end: str, buffer_mins: int = 15) -> dict:
     """Check if a user has a conflict with the proposed slot.
+    CRITICAL: DO NOT call this if the user didn't explicitly give a time. Do not guess a time!
     Returns conflict type: 'none' | 'full_overlap' | 'partial_overlap' | 'buffer'.
     """
-    _set_live_status("Checking conflicts...")
     events = get_repo().get_events_for_user(user_id)
-    def _parse(iso_s: str):
-        # Ensure aware UTC
-        dt = datetime.fromisoformat(iso_s.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            from datetime import timezone
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-
-    req_s = _parse(start)
-    req_e = _parse(end)
+    req_s = _parse_iso(start)
+    req_e = _parse_iso(end)
 
     for ev in events:
-        ev_s = _parse(ev.start.dateTime)
-        ev_e = _parse(ev.end.dateTime)
+        ev_s = _parse_iso(ev.start.dateTime)
+        ev_e = _parse_iso(ev.end.dateTime)
 
         if ev_s < req_e and ev_e > req_s:
             conflict_type = "full_overlap" if (ev_s <= req_s and ev_e >= req_e) else "partial_overlap"
@@ -326,7 +349,106 @@ def check_conflict_detail(user_id: str, start: str, end: str, buffer_mins: int =
     return {"conflict": False, "type": "none"}
 
 
+
+# ---------------------------------------------------------------------------
+# Tool: get_room_suggestions  — auto-pick a room by capacity + availability
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def get_room_suggestions(start: str, end: str, participant_count: int = 2) -> list[dict]:
+    """Find available physical meeting rooms for a time window, ranked by best fit for the group size.
+
+    Call this whenever you need to auto-assign a room for a physical meeting.
+    Pick the first room whose capacity >= participant_count AND is available.
+    If no room qualifies, return 'Virtual' as the location.
+
+    Args:
+        start: ISO 8601 UTC start time of the meeting.
+        end: ISO 8601 UTC end time of the meeting.
+        participant_count: Total number of attendees including organiser.
+
+    Returns:
+        list of {name, capacity, available} sorted by best size fit.
+        If empty, use 'Virtual'.
+    """
+    _set_live_status("Checking room availability...")
+    from datetime import datetime, timezone as dt_tz
+
+    s_dt = _parse_iso(start)
+    e_dt = _parse_iso(end)
+
+    from .repository import MOCK_EVENTS, MOCK_ROOMS, _normalize
+
+    booked_room_names: set[str] = set()
+    for evs in MOCK_EVENTS.values():
+        for ev in evs:
+            ev_s = _parse_iso(ev.start.dateTime)
+            ev_e = _parse_iso(ev.end.dateTime)
+            if s_dt < ev_e and ev_s < e_dt:
+                booked_room_names.add(_normalize(ev.location))
+
+    available_rooms = [
+        r for r in MOCK_ROOMS
+        if _normalize(r.displayName) not in booked_room_names
+    ]
+
+    def _get_size_bucket(cap: int) -> str:
+        if cap <= 8: return "small"
+        if cap <= 14: return "medium"
+        return "large"
+
+    req_bucket = "small"
+    if 3 <= participant_count <= 6: req_bucket = "medium"
+    elif participant_count >= 7: req_bucket = "large"
+
+    # Sort available rooms
+    # Primary sort: same bucket as requested? (True < False means True first in desc sort, so use 1/0)
+    # Secondary sort: capacity (closest fit first)
+    available_rooms.sort(key=lambda r: (
+        _get_size_bucket(r.capacity) != req_bucket,  # 0 if same bucket, 1 if different -> same bucket first
+        abs(r.capacity - participant_count)         # then smallest difference
+    ))
+
+    results = []
+    for r in available_rooms:
+        results.append({
+            "name": r.displayName,
+            "capacity": r.capacity,
+            "available": True,
+            "size": _get_size_bucket(r.capacity),
+            "fits_group": r.capacity >= participant_count,
+        })
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Helper: check if a specific room is available for a time window
+# ---------------------------------------------------------------------------
+def _check_room_availability(room_name: str, start: str, end: str) -> bool:
+    """Return True if the named room is free during [start, end]."""
+    from datetime import datetime, timezone as dt_tz
+    from .repository import MOCK_EVENTS, _normalize
+
+    def _p(v: str):
+        dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=dt_tz.utc)
+
+    s_dt = _p(start)
+    e_dt = _p(end)
+    room_norm = _normalize(room_name)
+
+    for evs in MOCK_EVENTS.values():
+        for ev in evs:
+            if _normalize(ev.location) == room_norm:
+                ev_s = _p(ev.start.dateTime)
+                ev_e = _p(ev.end.dateTime)
+                if s_dt < ev_e and ev_s < e_dt:
+                    return False
+    return True
+
+
 def _resolve_attendees(raw_attendees: list) -> list[dict]:
+
     """Helper to convert a list of strings (names) or dicts into proper attendee dicts.
     Prevents 'string indices must be integers' if LLM sends strings.
     """
@@ -336,11 +458,22 @@ def _resolve_attendees(raw_attendees: list) -> list[dict]:
 
     for a in raw_attendees:
         if isinstance(a, str):
-            # If LLM sent a name string, try to find the user to get their ID
+            # Try EID extraction first
+            m = re.search(r"\bEID\b\s*[:#-]?\s*(\d+)\b", a, flags=re.IGNORECASE)
+            if not m:
+                m = re.search(r"\b(\d{2,})\b", a)
+            if m:
+                resolved.append({"id": m.group(1), "type": "required"})
+                continue
+
+            # If no EID, try name search
             results = get_repo().search_users(a)
             if results:
-                user = results[0]  # Take the best match
+                user = results[0]
                 resolved.append({"id": user.id, "name": user.displayName, "type": "required"})
+            else:
+                # Preserve the string if we can't resolve it yet, so _coerce_attendees can try
+                resolved.append(a)
         elif isinstance(a, dict):
             # Check for alternative ID keys first
             temp_id = a.get("id") or a.get("eid") or a.get("userId") or a.get("user_id")
@@ -369,6 +502,9 @@ def create_meeting(
     presenter: str = "",
 ) -> dict:
     """Book a new meeting. Poojitha Reddy is always the organiser.
+    
+    CRITICAL RULE: NEVER call this tool unless the user has explicitly confirmed a specific time slot!
+    If the user did NOT mention a time, YOU ARE FORBIDDEN from guessing or assuming a time. You MUST call get_mutual_free_slots instead and ask them!
     
     Args:
         subject: Clear meeting title.

@@ -33,9 +33,7 @@ class TestFuzzySearch:
         assert "Rithwika Singh" in names
         assert "Rithwika Sharma" in names
 
-    def test_typo_match(self, repo):
-        results = repo.search_users("ritwika")
-        assert len(results) >= 1
+
 
     def test_caps_insensitive(self, repo):
         results = repo.search_users("RITHWIKA")

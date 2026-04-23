@@ -9,7 +9,7 @@ def dummy_tool(query: str) -> str:
 agent = Agent(
     name="test_agent",
     instruction="Use tool to answer user question.",
-    model="gemini-2.5-pro",
+    model="gemini-2.0-flash-exp",
     tools=[dummy_tool]
 )
 runner = Runner(agent)
