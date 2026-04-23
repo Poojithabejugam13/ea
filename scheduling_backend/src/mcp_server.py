@@ -500,6 +500,7 @@ def create_meeting(
     attendees: list = [],  # List of {"id": "eid_here", "type": "required|optional"}
     recurrence: str = "none",
     presenter: str = "",
+    recurrence_end_date: str = "",
 ) -> dict:
     """Book a new meeting. Poojitha Reddy is always the organiser.
     
@@ -583,6 +584,7 @@ def create_meeting(
         "location": location,
         "join_url": join_url,
         "recurrence": recurrence,
+        "recurrence_end_date": recurrence_end_date,
         "presenter": presenter or _get_organiser().displayName,
         "organizer": _get_organiser().displayName,
         "attendees": [a.emailAddress.name for a in attendee_entries],
@@ -599,6 +601,7 @@ def create_meeting(
         meeting_title=subject,
         meeting_agenda=agenda,
         participants=[a.emailAddress.name for a in attendee_entries],
+        recurrence_end_date=recurrence_end_date,
     )
 
     for ae in attendee_entries:
