@@ -259,6 +259,10 @@ class UserRepository:
                 results.append((1.0, user))
                 continue
 
+        exact_matches = [u for score, u in results if score == 1.0]
+        if exact_matches:
+            return exact_matches
+
         results.sort(key=lambda x: -x[0])
         return [u for _, u in results]
 
@@ -290,10 +294,17 @@ class UserRepository:
         """
         # Generate candidate slots: 08:00 to 18:00 every 30 min
         base = datetime.fromisoformat(f"{date_str}T08:00:00+00:00")
+        now_utc = datetime.now(timezone.utc)
+        
         candidates = []
         for i in range(0, 20):
             s = base + timedelta(minutes=30 * i)
             e = s + timedelta(minutes=duration_mins)
+            
+            # Skip past slots for today
+            if s < now_utc:
+                continue
+                
             if e.hour > 18:
                 break
             candidates.append((s, e))
@@ -485,3 +496,19 @@ class UserRepository:
         
         scored.sort(key=lambda x: -x[0])
         return [l for _, l in scored]
+
+    def get_frequent_contacts(self, organiser_name: str) -> List[User]:
+        """Fetch frequent contacts from DB, then resolve to User objects."""
+        from .db_client import get_frequent_contacts_db
+        names = get_frequent_contacts_db(organiser_name)
+        
+        # If DB is empty, provide some default logical suggestions for Engineering Manager
+        if not names:
+            names = ["Anand Kumar", "Radhakrishna", "Kiran Mehta", "Rithwika Singh"]
+
+        results = []
+        for name in names:
+            found = self.search_users(name)
+            if found:
+                results.append(found[0])
+        return results

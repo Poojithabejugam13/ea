@@ -399,10 +399,69 @@ interface DisambigPerson {
     .dup-del { background: linear-gradient(135deg, #7f1d1d, #b91c1c); color: white; border: none; border-radius: 8px; padding: 12px; font-weight: 600; cursor: pointer; }
     .dup-new { background: linear-gradient(135deg, #14532d, #15803d); color: white; border: none; border-radius: 8px; padding: 12px; font-weight: 600; cursor: pointer; }
     
-    .attendee-row { display: flex; align-items: center; justify-content: space-between; background: #1e293b; padding: 10px 15px; border-radius: 8px; margin-bottom: 8px; }
-    .attendee-row label { display: flex; align-items: center; gap: 10px; cursor: pointer; }
-    .attendee-row select { background: #0f172a; border: 1px solid #334155; color: white; padding: 6px; border-radius: 6px; outline: none; }
-    .confirm-btn { background: linear-gradient(135deg, #6366f1, #4f46e5); color: white; border: none; border-radius: 8px; padding: 12px 20px; font-weight: 600; cursor: pointer; width: 100%; margin-top: 10px; }
+    .attendee-dropdown {
+      width: 100%;
+      background: #0f172a;
+      border: 1px solid #334155;
+      color: #f1f5f9;
+      padding: 8px;
+      border-radius: 12px;
+      font-size: 0.95rem;
+      outline: none;
+      transition: 0.2s;
+    }
+    .attendee-dropdown option {
+      padding: 12px 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      cursor: pointer;
+    }
+    .attendee-dropdown option:checked {
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.4), rgba(99, 102, 241, 0.2));
+      color: white;
+    }
+    .attendee-dropdown:focus { border-color: #6366f1; }
+    .help-text {
+      font-size: 0.75rem;
+      color: #64748b;
+      margin: 6px 0 0 4px;
+      font-style: italic;
+    }
+    .attendee-row { 
+      display: flex; align-items: center; gap: 12px;
+      background: rgba(30, 41, 59, 0.3); 
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      padding: 12px 18px; 
+      border-radius: 12px; 
+      margin-bottom: 10px; 
+      transition: all 0.2s;
+    }
+    .attendee-row:hover { background: rgba(99, 102, 241, 0.1); border-color: rgba(99, 102, 241, 0.3); }
+    .attendee-row label { display: flex; align-items: center; gap: 12px; cursor: pointer; flex: 1; font-weight: 500; min-width: 0; }
+    .attendee-row select { 
+      background: #0f172a; 
+      border: 1px solid #334155; 
+      color: #94a3b8; 
+      padding: 6px 10px; 
+      border-radius: 8px; 
+      outline: none; 
+      font-size: 0.85rem;
+      transition: 0.2s;
+    }
+    .attendee-row select:focus { border-color: #6366f1; color: white; }
+    .confirm-btn { 
+      background: linear-gradient(135deg, #6366f1, #4f46e5); 
+      color: white; 
+      border: none; 
+      border-radius: 12px; 
+      padding: 14px 20px; 
+      font-weight: 600; 
+      cursor: pointer; 
+      width: 100%; 
+      margin-top: 15px; 
+      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+      transition: 0.2s;
+    }
+    .confirm-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 15px rgba(99, 102, 241, 0.4); }
     .editor-overlay { position: fixed; inset: 0; background: rgba(2,6,23,0.75); display: flex; align-items: center; justify-content: center; z-index: 2000; }
     .editor-card { width: min(560px, 90vw); background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
     .editor-card h3 { margin: 0 0 8px 0; color: #f8fafc; }
@@ -527,7 +586,8 @@ export class ChatComponent {
   ];
   
   // For attendee selection state
-  attendeeSelections: {selected: boolean, importance: string}[] = [];
+  selectedAttendee: string = '';
+  selectedAttendees: string[] = [];
   confirmCandidateChoice = '';
   showMeetingEditor = false;
   meetingEdit: any = {};
@@ -811,10 +871,7 @@ export class ChatComponent {
 
         // Setup attendee state if needed
         if (res.option_type === 'attendee') {
-           this.attendeeSelections = (res.options || []).map(() => ({
-             selected: false,
-             importance: q.toLowerCase().includes('imp') ? 'required' : 'optional'
-           }));
+           this.selectedAttendees = [];
         }
         if (res.option_type === 'attendee_confirm') {
           this.confirmCandidateChoice = (res.candidate_options || [])[0] || '';
@@ -868,6 +925,13 @@ export class ChatComponent {
     if (selected.length > 0) {
        const lines = selected.map((opt) => opt.split('*').join(''));
        this.sendAction(lines.join('\n'));
+    }
+  }
+
+  confirmSingleAttendeeDropdown() {
+    if (this.selectedAttendee) {
+       this.sendAction(`${this.selectedAttendee} [required]`);
+       this.selectedAttendee = '';
     }
   }
 

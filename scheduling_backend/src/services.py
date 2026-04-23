@@ -202,7 +202,7 @@ def _extract_topic_from_prompt(prompt: str) -> str:
 # AIAgent — orchestrates GeminiAgent with Redis short-circuit
 # ---------------------------------------------------------------------------
 
-from .ai_client import GeminiAgent as RealGeminiAgent
+from .ai_client import AIAgent as RealGeminiAgent
 
 # How many user+model turn pairs to send to Gemini (older turns archived in Redis)
 MAX_CONTEXT_TURNS = 6
@@ -283,7 +283,7 @@ def _parse_structured_form(prompt: str) -> dict:
             if eid:
                 attendees.append({
                     "id": eid.group(1),
-                    "type": (importance.group(1).lower() if importance else "optional"),
+                    "type": (importance.group(1).lower() if importance else "required"),
                 })
 
     date_s = grab("Date")
@@ -353,7 +353,7 @@ def _merge_missing_fields(draft: dict, prompt: str) -> dict:
     if "attendees" in draft.get("missing_fields", []):
         ids = re.findall(r"\b\d{2,}\b", text)
         if ids:
-            draft["attendees"] = [{"id": i, "type": "optional"} for i in ids]
+            draft["attendees"] = [{"id": i, "type": "required"} for i in ids]
             draft["missing_fields"] = [f for f in draft["missing_fields"] if f != "attendees"]
 
     if "date" in draft.get("missing_fields", []):
@@ -402,7 +402,7 @@ class AIAgent:
         self.session_mgr = session_manager
         self.scheduler = SchedulingService(repository)
         try:
-            self.gemini = RealGeminiAgent(repository, session_manager)
+            self.gemini = RealGeminiAgent()
             self.use_ai = True
         except Exception as e:
             # Use ascii() to safely encode the error on Windows terminals (cp1252 chokes on emoji)
@@ -743,6 +743,188 @@ class AIAgent:
             "recurrence": "none",
             "presenter": organiser.displayName if organiser else "",
         }, session_data, session_id)
+
+    def _process_update_request(self, prompt: str, session_data: dict, session_id: str) -> dict | None:
+        """
+        Handle natural language meeting update requests.
+        Examples: "update meeting title to standup meeting", "change title to X", "for the above meeting"
+        """
+        low_prompt = prompt.strip().lower()
+        
+        # Check if this is an update request
+        update_keywords = ["update", "change", "modify", "rename", "set", "make it"]
+        field_keywords = ["title", "subject", "name", "agenda", "location", "room", "presenter"]
+        
+        is_update_request = any(kw in low_prompt for kw in update_keywords) and any(kw in low_prompt for kw in field_keywords)
+        
+        if not is_update_request:
+            return None
+            
+        # Extract the field type and new value
+        field_patterns = {
+            "title": [
+                r"(?:update|change|modify|rename|set|make it).*?(?:title|subject|name).*?(?:to|as)\s+(.+?)(?:\.|$|\s+for|\s+and|\s+with)",
+                r"(?:title|subject|name)\s+(?:to|as)\s+(.+?)(?:\.|$|\s+for|\s+and|\s+with)",
+                r"(?:update|change|modify|rename|set|make it)\s+(.+?)(?:\.|$|\s+for|\s+and|\s+with)\s+(?:title|subject|name)",
+                r"(?:title|subject|name)\s+(?:should be|will be|is)\s+(.+?)(?:\.|$|\s+for|\s+and|\s+with)",
+                r"(?:call it|name it|refer to it as)\s+(.+?)(?:\.|$|\s+for|\s+and|\s+with)"
+            ],
+            "agenda": [
+                r"(?:update|change|modify|set).*?(?:agenda).*?(?:to|as)\s+(.+?)(?:\.|$|\s+for|\s+and|\s+with)",
+                r"(?:agenda)\s+(?:to|as|should be|will be)\s+(.+?)(?:\.|$|\s+for|\s+and|\s+with)",
+                r"(?:set|make).*?(?:agenda)\s+(.+?)(?:\.|$|\s+for|\s+and|\s+with)"
+            ],
+            "location": [
+                r"(?:update|change|modify|set).*?(?:location|room).*?(?:to|as)\s+(.+?)(?:\.|$|\s+for|\s+and|\s+with)",
+                r"(?:location|room)\s+(?:to|as|at|in)\s+(.+?)(?:\.|$|\s+for|\s+and|\s+with)",
+                r"(?:move|relocate).*?(?:to|at|in)\s+(.+?)(?:\.|$|\s+for|\s+and|\s+with)"
+            ],
+            "presenter": [
+                r"(?:update|change|modify|set).*?(?:presenter|host).*?(?:to|as)\s+(.+?)(?:\.|$|\s+for|\s+and|\s+with)",
+                r"(?:presenter|host)\s+(?:should be|will be|is)\s+(.+?)(?:\.|$|\s+for|\s+and|\s+with)",
+                r"(?:presented by|hosted by)\s+(.+?)(?:\.|$|\s+for|\s+and|\s+with)"
+            ]
+        }
+        
+        # Determine which field is being updated
+        field_type = None
+        new_value = None
+        
+        for field, patterns in field_patterns.items():
+            if any(keyword in low_prompt for keyword in [field]):
+                for pattern in patterns:
+                    match = re.search(pattern, low_prompt, re.IGNORECASE)
+                    if match:
+                        field_type = field
+                        new_value = match.group(1).strip().strip('"\'').strip()
+                        break
+                if field_type:
+                    break
+        
+        if not field_type or not new_value:
+            return None
+            
+        # Check for contextual references like "for the above meeting", "for this meeting"
+        context_refs = ["for the above meeting", "for this meeting", "for that meeting", "for the meeting"]
+        is_contextual = any(ref in low_prompt for ref in context_refs)
+        
+        # Get the target meeting
+        target_meeting = None
+        
+        if is_contextual:
+            # Get the most recent meeting from session data
+            target_meeting = session_data.get("last_meeting")
+        
+        # If no contextual meeting found, try to find by other means
+        if not target_meeting:
+            # Look for meetings in recent history or cache
+            meetings = self.session_mgr.list_meetings()
+            if meetings:
+                # Get the most recent meeting
+                target_meeting = meetings[-1] if meetings else None
+        
+        if not target_meeting:
+            return {
+                "response": "I couldn't identify which meeting to update. Please specify the meeting or make sure you're referring to a recently created meeting.",
+                "intent": "update_failed",
+                "options": [],
+                "option_type": "general",
+                "titled_sections": {},
+            }
+        
+        # Extract required fields for update
+        event_id = target_meeting.get("event_id")
+        fingerprint = target_meeting.get("fingerprint")
+        
+        if not event_id:
+            return {
+                "response": "I couldn't find the meeting ID for the update. The meeting might not be properly saved.",
+                "intent": "update_failed", 
+                "options": [],
+                "option_type": "general",
+                "titled_sections": {},
+            }
+        
+        # Call the update meeting function
+        try:
+            from .mcp_server import update_meeting
+            
+            # Prepare update parameters based on field type
+            update_params = {
+                "event_id": event_id,
+                "fingerprint": fingerprint or "",
+                "new_start": "",
+                "new_end": "",
+                "new_agenda": "",
+                "new_location": "",
+                "new_attendees": None,
+                "new_recurrence": "",
+                "new_presenter": ""
+            }
+            
+            # Set the appropriate field
+            if field_type == "title":
+                update_params["new_subject"] = new_value
+            elif field_type == "agenda":
+                update_params["new_agenda"] = new_value
+            elif field_type == "location":
+                update_params["new_location"] = new_value
+            elif field_type == "presenter":
+                update_params["new_presenter"] = new_value
+            
+            result = update_meeting(**update_params)
+            
+            if result.get("status") == "updated":
+                # Update the session data with the new field value
+                if "last_meeting" in session_data:
+                    if field_type == "title":
+                        session_data["last_meeting"]["subject"] = new_value
+                    elif field_type == "agenda":
+                        session_data["last_meeting"]["agenda"] = new_value
+                    elif field_type == "location":
+                        session_data["last_meeting"]["location"] = new_value
+                    elif field_type == "presenter":
+                        session_data["last_meeting"]["presenter"] = new_value
+                    self.session_mgr.set_session(session_id, session_data)
+                
+                # Create appropriate response message
+                field_display_name = field_type.capitalize()
+                if field_type == "title":
+                    field_display_name = "title"
+                
+                return {
+                    "response": f"Done. The meeting {field_display_name} has been updated to \"{new_value}\". All attendees have been notified of the change.",
+                    "intent": "meeting_updated",
+                    "options": [],
+                    "option_type": "general",
+                    "titled_sections": {},
+                    "meeting_data": {
+                        "event_id": event_id,
+                        "fingerprint": fingerprint,
+                        "subject": result.get("subject", target_meeting.get("subject", "")),
+                        "agenda": result.get("agenda", target_meeting.get("agenda", "")),
+                        "start": target_meeting.get("start", ""),
+                        "end": target_meeting.get("end", ""),
+                        "location": result.get("location", target_meeting.get("location", "Virtual")),
+                    }
+                }
+            else:
+                return {
+                    "response": f"Failed to update meeting: {result.get('message', 'Unknown error')}",
+                    "intent": "update_failed",
+                    "options": [],
+                    "option_type": "general",
+                    "titled_sections": {},
+                }
+                
+        except Exception as e:
+            return {
+                "response": f"Error updating meeting: {str(e)}",
+                "intent": "update_failed",
+                "options": [],
+                "option_type": "general",
+                "titled_sections": {},
+            }
 
     def process_prompt(self, prompt: str, session_id: str = "default") -> dict:
         self.session_mgr.set_status(session_id, "Processing request...")
@@ -1139,6 +1321,69 @@ class AIAgent:
         option_type = classify_option_type(options, response_text)
         titled_sections = extract_titled_sections(response_text)
 
+        # Clear tap options if the meeting was successfully booked
+        is_booked = bool(re.search(r'(Join Link|meeting booked|successfully booked|has been scheduled|has been booked|I\'ve booked)', response_text, re.IGNORECASE))
+        if is_booked and option_type != "duplicate_action":
+            options = []
+            option_type = "general"
+            titled_sections = {}
+
+        candidate_options = []
+        selection_map = {}
+
+        # ── Automated Attendee Resolution for Dropdown ──────────────────
+        if option_type == "attendee_confirm":
+             # Extract the name from the response context (e.g. 'Multiple people found for "Anand"')
+             name_match = re.search(r'Multiple people found for "([^"]+)"', response_text, re.IGNORECASE)
+             if not name_match:
+                 name_match = re.search(r'Which ([^ ]+) did you mean', response_text, re.IGNORECASE)
+             if not name_match:
+                 name_match = re.search(r'I see (?:two|multiple|several) ([^ ,?]+)', response_text, re.IGNORECASE)
+             
+             name = name_match.group(1).strip() if name_match else ""
+             if name.lower().endswith("s") and len(name) > 3:
+                 # Check if it's a pluralized name (e.g. "Rithwikas")
+                 name = name[:-1]
+             if not name:
+                 # Try to extract the name from the options themselves if they look like "Name (Email)"
+                 for o in options:
+                     n = o.split("(")[0].strip()
+                     if n:
+                         name = n
+                         break
+             
+             if name:
+                 users = self.repo.search_users(name)
+                 if users:
+                     selection_map = { f"{u.displayName} ({u.mail})": u.id for u in users }
+                     candidate_options = list(selection_map.keys())
+
+        # ── FAST TRACK: Save resolved attendees to session ─────────────
+        if "📅 Pick a time" in response_text:
+            attendee_ids = []
+            # For 1-on-1: "Pick a time to meet Anand Kumar"
+            m_name = re.search(r"Pick a time to meet ([^ \n\r]+ [^ \n\r]+)", response_text)
+            if m_name:
+                name = m_name.group(1).strip()
+                found = self.repo.search_users(name)
+                if found:
+                    attendee_ids = [found[0].id]
+                    session_data["fast_track_attendee_names"] = found[0].displayName
+            else:
+                # For Group: "Attendees: Anand Kumar, Kiran Mehta"
+                m_group = re.search(r"Attendees:\s*([^\n\r]+)", response_text)
+                if m_group:
+                    names = [n.strip() for n in m_group.group(1).split(",")]
+                    for n in names:
+                        found = self.repo.search_users(n)
+                        if found:
+                            attendee_ids.append(found[0].id)
+                    session_data["fast_track_attendee_names"] = ", ".join(names)
+
+            if attendee_ids:
+                session_data["fast_track_attendee_ids"] = attendee_ids
+                self.session_mgr.set_session(session_id, session_data)
+
         is_conflict_flow = any(w in response_text.lower() for w in [
             "cannot book",
             "conflict",
@@ -1184,6 +1429,8 @@ class AIAgent:
             "intent": "ai_generated",
             "options": options,
             "option_type": option_type,
+            "candidate_options": candidate_options,
+            "selection_map": selection_map,
             "titled_sections": titled_sections,  # {"titles": [...], "agendas": [...]}
         }
 
