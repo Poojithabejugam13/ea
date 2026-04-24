@@ -5,26 +5,26 @@ html, body {
   margin: 0;
   padding: 0;
   font-family: 'Inter', sans-serif;
-  background-color: #020617;
-  color: #f8fafc;
+  background-color: #ffffff;
+  color: #f1f4f8;
 }
 
 * {
   box-sizing: border-box;
 }
 
-/* Custom Scrollbar for dark theme */
+/* Custom Scrollbar for light theme */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: #0f172a; 
+  background: #f8fafc; 
 }
 ::-webkit-scrollbar-thumb {
-  background: #334155; 
+  background: #cbd5e1; 
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #475569; 
+  background: #f7f8f9; 
 }

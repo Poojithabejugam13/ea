@@ -37,6 +37,7 @@ def insert_meeting(
     meeting_title: str,
     meeting_agenda: str = "",
     participants: list[str] | None = None,
+    recurrence_end_date: str = "",
 ) -> str | None:
     """
     Insert a row into the `meetings` table.
@@ -59,9 +60,9 @@ def insert_meeting(
     sql = """
         INSERT INTO meetings
             (id, organiser_name, start_date, end_date,
-             meeting_title, meeting_agenda, participants)
+             meeting_title, meeting_agenda, participants, recurrence_end_date)
         VALUES
-            (%s, %s, %s, %s, %s, %s, %s)
+            (%s, %s, %s, %s, %s, %s, %s, %s)
     """
 
     try:
@@ -75,6 +76,7 @@ def insert_meeting(
             meeting_title,
             meeting_agenda,
             participants_json,
+            recurrence_end_date,
         ))
         conn.commit()
         cur.close()
@@ -93,6 +95,7 @@ def update_meeting_db(
     start_date: str | None = None,
     end_date: str | None = None,
     participants: list[str] | None = None,
+    recurrence_end_date: str | None = None,
 ) -> bool:
     """Update existing meeting in the PostgreSQL DB."""
     fields = []
@@ -186,4 +189,35 @@ def get_user_schedule_db(user_name: str, target_date: str) -> list[dict]:
         return results
     except Exception as e:
         print(f"[DB ERROR] Failed to read schedule: {e}")
+        return []
+
+
+def get_frequent_contacts_db(organiser_name: str) -> list[str]:
+    """
+    Return top 5 names who appear most frequently in the participants list 
+    for meetings organised by organiser_name.
+    """
+    sql = "SELECT participants FROM meetings WHERE organiser_name = %s"
+    try:
+        conn = _get_connection()
+        cur = conn.cursor()
+        cur.execute(sql, (organiser_name,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        counts = {}
+        for (parts_json,) in rows:
+            try:
+                parts = json.loads(parts_json) if isinstance(parts_json, str) else list(parts_json)
+                for p in parts:
+                    counts[p] = counts.get(p, 0) + 1
+            except Exception:
+                continue
+
+        # Sort by frequency
+        sorted_contacts = sorted(counts.items(), key=lambda x: -x[1])
+        return [c[0] for c in sorted_contacts[:5]]
+    except Exception as e:
+        print(f"[DB ERROR] Failed to get frequent contacts: {e}")
         return []

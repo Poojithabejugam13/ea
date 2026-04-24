@@ -53,9 +53,12 @@ class FirewallMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         return response
 
+# IMPORTANT: Middleware execution order is LIFO (last added = outermost).
+# CORS must be the OUTERMOST middleware so it always adds headers,
+# even when inner middleware or route handlers raise exceptions.
 app.add_middleware(FirewallMiddleware)
 
-# Add CORS Middleware for Angular Frontend
+# CORS added LAST = outermost in the middleware stack
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=".*",
@@ -63,6 +66,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Global exception handler to ensure errors return proper JSON (with CORS headers)
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logging.getLogger("uvicorn.error").error(f"Unhandled error on {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {str(exc)}"},
+    )
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
@@ -80,7 +92,7 @@ async def add_security_headers(request: Request, call_next):
 @app.post("/agent/process")
 async def process_agent_request(payload: dict = Body(...)):
     """
-    Endpoint for the Streamlit UI to talk to the AI Agent.
+    Endpoint for the Angular UI to talk to the AI Agent.
     """
     from .dependencies import CALLER_USER_ID
     prompt = payload.get("prompt", "")

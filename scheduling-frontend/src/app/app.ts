@@ -43,7 +43,7 @@ import { ChatComponent } from './chat/chat';
       overflow: hidden;
     }
 
-    app-chat, app-schedule-form {
+    app-chat {
       width: 100%;
       height: 100%;
       max-width: 100%;

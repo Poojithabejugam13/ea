@@ -87,7 +87,7 @@ def _coerce_attendees(attendees) -> list[dict]:
             coerced.append({
                 **a,
                 "id": str(attendee_id),
-                "type": a.get("type", "optional"),
+                "type": a.get("type", "required"),
             })
             continue
 
@@ -99,7 +99,7 @@ def _coerce_attendees(attendees) -> list[dict]:
                 m = re.search(r"\b(\d{2,})\b", s)  # fallback: any 2+ digit token
             if not m:
                 continue
-            coerced.append({"id": m.group(1), "type": "optional"})
+            coerced.append({"id": m.group(1), "type": "required"})
             continue
 
     return coerced
@@ -171,6 +171,29 @@ def get_users_by_team(team_name: str) -> list[dict]:
     ]
     get_session_mgr().cache_search(cache_key, formatted, ttl=3600)
     return formatted
+
+
+# ---------------------------------------------------------------------------
+# Tool: get_frequent_contacts
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def get_frequent_contacts() -> list[dict]:
+    """Get people Poojitha Reddy connects with most often.
+    Use this to suggest attendees in Phase 1 if she says 'schedule a meet'.
+    """
+    _set_live_status("Fetching frequent contacts...")
+    org = _get_organiser()
+    results = get_repo().get_frequent_contacts(org.displayName)
+    return [
+        {
+            "id": u.id,
+            "name": u.displayName,
+            "email": u.mail,
+            "jobTitle": u.jobTitle,
+            "department": u.department,
+        }
+        for u in results
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +281,35 @@ def get_mutual_free_slots(user_ids: list[str], date: str, duration_mins: int = 6
     _set_live_status("Finding mutual free slots...")
     all_ids = list(set(user_ids + [_get_organiser().id]))
     return get_repo().get_free_slots(all_ids, date, duration_mins)
+
+# ---------------------------------------------------------------------------
+# Tool: find_available_room
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def find_available_room(participant_count: int, start: str, end: str) -> str:
+    """Find an available room for the given time slot that fits the number of participants.
+    Returns the room name (e.g. 'Krishna') or 'Virtual' if no room is available.
+    """
+    _set_live_status("Finding available room...")
+    available_room_strs = get_repo().get_room_suggestions("", start, end)
+    
+    # Sort rooms by capacity to find the smallest one that fits
+    parsed_rooms = []
+    for r_str in available_room_strs:
+        m = re.search(r'Capacity:\s*(\d+)', r_str)
+        if m:
+            parsed_rooms.append({
+                "name": r_str.split(' (')[0],
+                "capacity": int(m.group(1))
+            })
+            
+    parsed_rooms.sort(key=lambda x: x["capacity"])
+    
+    for r in parsed_rooms:
+        if r["capacity"] >= participant_count:
+            return r["name"]
+            
+    return "Virtual"
 
 
 # ---------------------------------------------------------------------------
@@ -448,6 +500,7 @@ def create_meeting(
     attendees: list = [],  # List of {"id": "eid_here", "type": "required|optional"}
     recurrence: str = "none",
     presenter: str = "",
+    recurrence_end_date: str = "",
 ) -> dict:
     """Book a new meeting. Poojitha Reddy is always the organiser.
     
@@ -477,7 +530,7 @@ def create_meeting(
         if user:
             attendee_entries.append(AttendeeEntry(
                 emailAddress=EmailAddress(address=user.mail, name=user.displayName),
-                type=a.get("type", "optional"),
+                type=a.get("type", "required"),
                 userId=user.id,
             ))
 
@@ -531,6 +584,7 @@ def create_meeting(
         "location": location,
         "join_url": join_url,
         "recurrence": recurrence,
+        "recurrence_end_date": recurrence_end_date,
         "presenter": presenter or _get_organiser().displayName,
         "organizer": _get_organiser().displayName,
         "attendees": [a.emailAddress.name for a in attendee_entries],
@@ -547,6 +601,7 @@ def create_meeting(
         meeting_title=subject,
         meeting_agenda=agenda,
         participants=[a.emailAddress.name for a in attendee_entries],
+        recurrence_end_date=recurrence_end_date,
     )
 
     for ae in attendee_entries:
@@ -638,7 +693,7 @@ def update_meeting(
             if user:
                 new_entries.append(AttendeeEntry(
                     emailAddress=EmailAddress(address=user.mail, name=user.displayName),
-                    type=a.get("type", "optional"),
+                    type=a.get("type", "required"),
                     userId=user.id,
                 ))
 
@@ -797,3 +852,21 @@ def notify_user(user_id: str, subject: str, body: str) -> dict:
 
 if __name__ == "__main__":
     mcp.run()
+# ---------------------------------------------------------------------------
+# Tool: notify_user
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def notify_user(user_id: str, subject: str, body: str, interactive: bool = True) -> dict:
+    """Send a notification to a user.
+    If interactive=True, the user will see OK/CANCEL buttons in their interface.
+    """
+    _set_live_status(f"Notifying user {user_id}...")
+    res = get_repo().send_notification(user_id, subject, body)
+    
+    if interactive:
+        # In a real app, this would trigger a push notification with actions.
+        # Here we just log it as interactive.
+        res["interactive"] = True
+        res["actions"] = ["OK", "Cancel"]
+        
+    return res

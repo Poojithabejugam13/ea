@@ -43,14 +43,14 @@ interface DisambigPerson {
             <div [class]="msg.role === 'user' ? 'msg user-msg' : 'msg assistant-msg'">
               <ng-container *ngIf="editingIndex !== i; else editTpl">
                 <div class="msg-content" [innerHTML]="formatMessage(msg.content)"></div>
-                <button *ngIf="msg.role === 'user'" class="edit-btn" (click)="startEdit(i, msg.content)" title="Edit message">
-                  ✎ Edit
+                <button *ngIf="msg.role === 'user'" class="edit-action" (click)="startEdit(i, msg.content)" title="Edit message">
+                  Edit
                 </button>
-                <button *ngIf="msg.role === 'assistant' && i > 0" class="regenerate-btn" (click)="regenerate(i)" title="Regenerate response">
-                  ↻ Resend
+                <button *ngIf="msg.role === 'assistant' && i > 0" class="edit-action" (click)="regenerate(i)" title="Regenerate response">
+                  Resend
                 </button>
-                <button *ngIf="msg.role === 'assistant' && msg.meetingData" class="edit-btn" (click)="openMeetingEditor(msg.meetingData)" title="Edit meeting">
-                  ✎ Edit Meeting
+                <button *ngIf="msg.role === 'assistant' && msg.meetingData" class="edit-action" (click)="openMeetingEditor(msg.meetingData)" title="Edit meeting">
+                  Edit Meeting
                 </button>
               </ng-container>
               
@@ -58,15 +58,15 @@ interface DisambigPerson {
                 <div class="edit-area">
                   <textarea [(ngModel)]="editPrompt" rows="3"></textarea>
                   <div class="edit-actions">
-                    <button class="save-btn" (click)="saveEdit(i)">Save & Submit</button>
-                    <button class="cancel-btn" (click)="cancelEdit()">Cancel</button>
+                    <button class="primary-btn small" (click)="saveEdit(i)">Save & Submit</button>
+                    <button class="ghost-btn small" (click)="cancelEdit()">Cancel</button>
                   </div>
                 </div>
               </ng-template>
                         
               <!-- Join Links -->
               <div *ngFor="let link of msg.links" class="join-box">
-                🔗 <b>Join Meeting Link</b><br>
+                <b>Join Meeting</b><br>
                 <a [href]="link" target="_blank">{{link}}</a>
               </div>
 
@@ -151,14 +151,14 @@ interface DisambigPerson {
                       [disabled]="!isGatheringComplete(msg) || loading || !!msg.finalSelections"
                       (click)="onConfirmCard(msg)"
                     >
-                      ✅ Confirm & Book
+                      Confirm & Book
                     </button>
                   </div>
                 </div>
 
-                <!-- CONFLICT: alternates stacked + keep-original button at bottom -->
+                <!-- CONFLICT -->
                 <div *ngIf="msg.optionType === 'conflict'" class="card-wrapper">
-                  <p class="section-header">📅 Available Alternatives</p>
+                  <p class="section-header">Available Alternatives</p>
                   <div class="stacked-buttons">
                     <button 
                       *ngFor="let opt of (msg.options || [])" 
@@ -172,7 +172,7 @@ interface DisambigPerson {
                   </div>
                 </div>
 
-                <!-- EDIT GRID (Post-booking 2-column grid) -->
+                <!-- EDIT GRID (Post-booking) -->
                 <div *ngIf="msg.optionType === 'edit_grid'" class="edit-grid">
                   <button 
                     *ngFor="let opt of msg.options" 
@@ -184,7 +184,7 @@ interface DisambigPerson {
                   </button>
                 </div>
 
-                <!-- DISAMBIGUATION CARD — rich person picker -->
+                <!-- DISAMBIGUATION CARD -->
                 <div *ngIf="msg.intent === 'attendee_disambiguation' || msg.optionType === 'attendee_disambiguation'" class="disambig-card">
                   <div class="disambig-header">
                     <span class="disambig-title">👥 Select Attendee</span>
@@ -217,8 +217,8 @@ interface DisambigPerson {
                   </button>
                 </div>
 
-                <!-- GENERAL (stacked fallback for any other option type) -->
-                <div *ngIf="msg.intent !== 'attendee_disambiguation' && msg.optionType !== 'attendee_disambiguation' && !['gathering_card', 'edit_grid', 'conflict'].includes(msg.optionType || '') && (msg.options?.length || 0) > 0" class="stacked-buttons" style="margin-top: 12px;">
+                <!-- GENERAL fallback -->
+                <div *ngIf="msg.intent !== 'attendee_disambiguation' && msg.optionType !== 'attendee_disambiguation' && !['gathering_card', 'edit_grid', 'conflict'].includes(msg.optionType || '') && (msg.options?.length || 0) > 0" class="stacked-buttons mt-1">
                   <button 
                     *ngFor="let opt of msg.options" 
                     class="choice-btn"
@@ -243,9 +243,6 @@ interface DisambigPerson {
             </div>
             <div class="thinking-text">
               {{ loadingMessage }}
-              <span class="dots">
-                <span>.</span><span>.</span><span>.</span>
-              </span>
             </div>
           </div>
         </div>
@@ -489,49 +486,25 @@ interface DisambigPerson {
     .disambig-confirm-btn:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); }
     .disambig-confirm-btn:disabled { opacity: 0.4; cursor: not-allowed; }
     
-    .suggestion-dropdown {
-      background: rgba(15, 23, 42, 0.85);
-      backdrop-filter: blur(12px);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 12px;
-      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
-      z-index: 2000;
-      max-height: 200px;
-      overflow-y: auto;
-      padding: 8px;
-    }
-    .suggestion-item {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 10px 14px;
-      border-radius: 8px;
-      cursor: pointer;
-      transition: 0.2s;
-    }
-    .suggestion-item:hover {
-      background: rgba(99, 102, 241, 0.15);
-    }
-    .suggestion-icon {
-      font-size: 1.2rem;
-      width: 24px;
-      display: flex;
-      justify-content: center;
-      color: #818cf8;
-    }
-    .suggestion-info {
-      display: flex;
-      flex-direction: column;
-    }
-    .suggestion-label {
-      font-size: 0.9rem;
-      font-weight: 500;
-      color: #f1f5f9;
-    }
-    .suggestion-sublabel {
-      font-size: 0.75rem;
-      color: #94a3b8;
-    }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .form-field { display: flex; flex-direction: column; gap: 8px; }
+    .form-field label { font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.025em; }
+    .form-field input, .form-field select, .editor-card textarea { padding: 12px 16px; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 0.95rem; outline: none; transition: all 0.2s; color: #1e293b; background: #fcfcfc; }
+    .form-field input:focus, .form-field select:focus, .editor-card textarea:focus { border-color: #2563eb; background: #ffffff; box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.08); }
+
+    .edit-actions { display: flex; gap: 14px; justify-content: flex-end; margin-top: 10px; }
+    .mt-1 { margin-top: 16px; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+    .disambig-card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 20px; padding: 24px; margin-top: 16px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05); }
+    .disambig-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    .disambig-title { font-weight: 800; font-size: 0.85rem; text-transform: uppercase; color: #64748b; letter-spacing: 0.05em; }
+    .person-card { display: flex; align-items: center; gap: 14px; padding: 12px 16px; border: 1px solid #f1f5f9; border-radius: 14px; cursor: pointer; text-align: left; width: 100%; background: #ffffff; transition: all 0.2s; }
+    .person-card:hover { border-color: #2563eb; background: #f0f7ff; }
+    .person-card.person-selected { border-color: #2563eb; background: #eff6ff; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1); }
+    .person-avatar { width: 40px; height: 40px; border-radius: 12px; background: #eff6ff; color: #2563eb; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1rem; }
+    .person-name { font-size: 1rem; font-weight: 700; color: #0f172a; }
+    .person-dept { font-size: 0.8rem; color: #64748b; font-weight: 500; }
   `]
 })
 export class ChatComponent {
@@ -940,10 +913,18 @@ export class ChatComponent {
   }
 
   confirmAttendees(options: string[]) {
-    const selected = options.filter((_, i) => this.attendeeSelections[i].selected);
+    // Filter out any blank entries and send confirmed attendees as action
+    const selected = options.filter(opt => opt && opt.trim().length > 0);
     if (selected.length > 0) {
       const lines = selected.map((opt) => opt.split('*').join(''));
       this.sendAction(lines.join('\n'));
+    }
+  }
+
+  confirmSingleAttendeeDropdown() {
+    if (this.selectedAttendee) {
+       this.sendAction(`${this.selectedAttendee} [required]`);
+       this.selectedAttendee = '';
     }
   }
 

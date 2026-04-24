@@ -369,7 +369,7 @@ def _merge_missing_fields(draft: dict, prompt: str) -> dict:
     if "attendees" in draft.get("missing_fields", []):
         ids = re.findall(r"\b\d{2,}\b", text)
         if ids:
-            draft["attendees"] = [{"id": i, "type": "optional"} for i in ids]
+            draft["attendees"] = [{"id": i, "type": "required"} for i in ids]
             draft["missing_fields"] = [f for f in draft["missing_fields"] if f != "attendees"]
 
     if "date" in draft.get("missing_fields", []):
@@ -419,7 +419,7 @@ class AIAgent:
         self.scheduler = SchedulingService(repository)
         self.use_ai = False
         try:
-            self.gemini = RealGeminiAgent(repository, session_manager)
+            self.gemini = RealGeminiAgent(self.repo, self.session_mgr)
             self.use_ai = True
             print("INFO: AIAgent initialized successfully with Gemini.")
         except Exception as e:
@@ -514,17 +514,27 @@ class AIAgent:
         }
         session_data.pop("pending_single_confirm", None)
         self.session_mgr.set_session(session_id, session_data)
+        start_fmt = _format_dt_for_ui(_safe_iso_utc(result.get("start", payload["start"])))
+        end_fmt = _format_dt_for_ui(_safe_iso_utc(result.get("end", payload["end"])))
+        
+        resp_text = (
+            f'✅ **{payload["subject"]}** has been booked!\n'
+            f'📅 {start_fmt} → {end_fmt}\n'
+            f'🚪 {payload.get("location", "Virtual")}'
+        )
+        if payload.get("presenter"):
+            resp_text += f'\n🎤 Presenter: {payload["presenter"]}'
+        if payload.get("recurrence", "none").lower() != "none":
+            resp_text += f'\n🔁 Recurrence: {payload["recurrence"]}'
+        if payload.get("agenda"):
+            resp_text += f'\n\n📝 **Agenda:**\n{payload["agenda"]}'
+        if result.get("join_url"):
+            resp_text += f'\nJoin: {result["join_url"]}'
+
         return {
-            "response": (
-                f'Great — meeting booked.\n'
-                f'Title: {payload["subject"]}\n'
-                f'When: {_format_dt_for_ui(_safe_iso_utc(result["start"]))} to '
-                f'{_format_dt_for_ui(_safe_iso_utc(result["end"]))}\n'
-                f'Agenda: {payload["agenda"]}\n'
-                f'Join: {result.get("join_url","")}'
-            ),
+            "response": resp_text.strip(),
             "intent": "meeting_booked",
-            "options": [],
+            "options": ["✏️ Edit Details"],
             "option_type": "general",
             "titled_sections": {},
             "meeting_data": {
@@ -925,13 +935,21 @@ class AIAgent:
                     first_slot = all_repo_slots[0]
                     first_start = first_slot["start"]
                     first_end = first_slot.get("end", (_safe_iso_utc(first_slot["start"]) + timedelta(minutes=dur)).strftime("%Y-%m-%dT%H:%M:%SZ"))
-                    available_rooms = self.repo.get_room_suggestions("", start=first_start, end=first_end)
-                    rooms = available_rooms + ["Virtual 🌐"]
+                    
+                    from .mcp_server import get_room_suggestions as mcp_get_rooms
+                    mcp_rooms = mcp_get_rooms(first_start, first_end, 2)
+                    rooms = [r["name"] for r in mcp_rooms if r.get("fits_group")]
+                    if not rooms:
+                        rooms = [mcp_rooms[0]["name"]] if mcp_rooms else ["Virtual 🌐"]
+                    if "Virtual 🌐" not in rooms:
+                        rooms.append("Virtual 🌐")
                 else:
                     # Fallback: use AI labels (won't resolve at confirm, but better than nothing)
                     display_slots = ai_json.get("timeSlots", [])
                     slot_label_map = {}
-                    rooms = self.repo.get_room_suggestions("") + ["Virtual 🌐"]
+                    rooms = ai_json.get("rooms", [])
+                    if not rooms:
+                        rooms = ["Virtual 🌐"]
 
                 # Automatically pick the first room if available
                 first_room = available_rooms[0] if available_rooms else "Virtual 🌐"
@@ -1033,16 +1051,26 @@ class AIAgent:
                 draft["initial_slots"] = display_slots
                 draft["slot_label_map"] = slot_label_map
                 
-                # Fetch real available rooms for the first free slot
+                # Fetch real available rooms for the first free slot using capacity logic
+                from .mcp_server import get_room_suggestions as mcp_get_rooms
+                p_count = len(participants) if participants else 2
+                
                 if slot_label_map:
                     first_key = next(iter(slot_label_map))
                     room_start = slot_label_map[first_key]["start"]
                     room_end = slot_label_map[first_key]["end"]
-                    available_rooms = self.repo.get_room_suggestions("", start=room_start, end=room_end)
+                    mcp_rooms = mcp_get_rooms(room_start, room_end, p_count)
                 else:
-                    available_rooms = self.repo.get_room_suggestions("")
-                rooms = available_rooms + ["Virtual 🌐"]
-                draft["initial_rooms"] = rooms
+                    room_start = datetime.utcnow().isoformat() + "Z"
+                    room_end = (datetime.utcnow() + timedelta(hours=1)).isoformat() + "Z"
+                    mcp_rooms = mcp_get_rooms(room_start, room_end, p_count)
+                
+                # Auto-assign the best room and remove room selection from the UI
+                best_room = next((r["name"] for r in mcp_rooms if r.get("fits_group")), mcp_rooms[0]["name"] if mcp_rooms else "Virtual 🌐")
+                prefilled["room"] = best_room
+                draft["room"] = best_room
+                if "room" in missing:
+                    missing.remove("room")
 
                 session_data["draft_meeting"] = draft
                 self.session_mgr.set_session(session_id, session_data)
@@ -1060,8 +1088,6 @@ class AIAgent:
                     titled["📝 Topic (choose one)"] = unique_topics
                 if "start" in missing and display_slots:
                     titled["🕐 Select Time (choose one)"] = display_slots
-                if "room" in missing and rooms:
-                    titled["🚪 Select Room (choose one)"] = rooms
                 if "presenter" in missing and participants:
                     titled["🎤 Select Presenter (multi)"] = participants
                 if "recurrence" in missing and recurrence_opts:
@@ -1248,7 +1274,7 @@ class AIAgent:
                 return {
                     "response": "\n".join(confirm_lines),
                     "intent": "meeting_booked",
-                    "options": [],
+                    "options": ["✏️ Edit Details"],
                     "option_type": "general",
                     "titled_sections": {},
                     "links": [join_url] if join_url else [],
@@ -1281,6 +1307,69 @@ class AIAgent:
         options = extract_options(response_text)
         option_type = classify_option_type(options, response_text)
         titled_sections = extract_titled_sections(response_text)
+
+        # Clear tap options if the meeting was successfully booked
+        is_booked = bool(re.search(r'(Join Link|meeting booked|successfully booked|has been scheduled|has been booked|I\'ve booked)', response_text, re.IGNORECASE))
+        if is_booked and option_type != "duplicate_action":
+            options = []
+            option_type = "general"
+            titled_sections = {}
+
+        candidate_options = []
+        selection_map = {}
+
+        # ── Automated Attendee Resolution for Dropdown ──────────────────
+        if option_type == "attendee_confirm":
+             # Extract the name from the response context (e.g. 'Multiple people found for "Anand"')
+             name_match = re.search(r'Multiple people found for "([^"]+)"', response_text, re.IGNORECASE)
+             if not name_match:
+                 name_match = re.search(r'Which ([^ ]+) did you mean', response_text, re.IGNORECASE)
+             if not name_match:
+                 name_match = re.search(r'I see (?:two|multiple|several) ([^ ,?]+)', response_text, re.IGNORECASE)
+             
+             name = name_match.group(1).strip() if name_match else ""
+             if name.lower().endswith("s") and len(name) > 3:
+                 # Check if it's a pluralized name (e.g. "Rithwikas")
+                 name = name[:-1]
+             if not name:
+                 # Try to extract the name from the options themselves if they look like "Name (Email)"
+                 for o in options:
+                     n = o.split("(")[0].strip()
+                     if n:
+                         name = n
+                         break
+             
+             if name:
+                 users = self.repo.search_users(name)
+                 if users:
+                     selection_map = { f"{u.displayName} ({u.mail})": u.id for u in users }
+                     candidate_options = list(selection_map.keys())
+
+        # ── FAST TRACK: Save resolved attendees to session ─────────────
+        if "📅 Pick a time" in response_text:
+            attendee_ids = []
+            # For 1-on-1: "Pick a time to meet Anand Kumar"
+            m_name = re.search(r"Pick a time to meet ([^ \n\r]+ [^ \n\r]+)", response_text)
+            if m_name:
+                name = m_name.group(1).strip()
+                found = self.repo.search_users(name)
+                if found:
+                    attendee_ids = [found[0].id]
+                    session_data["fast_track_attendee_names"] = found[0].displayName
+            else:
+                # For Group: "Attendees: Anand Kumar, Kiran Mehta"
+                m_group = re.search(r"Attendees:\s*([^\n\r]+)", response_text)
+                if m_group:
+                    names = [n.strip() for n in m_group.group(1).split(",")]
+                    for n in names:
+                        found = self.repo.search_users(n)
+                        if found:
+                            attendee_ids.append(found[0].id)
+                    session_data["fast_track_attendee_names"] = ", ".join(names)
+
+            if attendee_ids:
+                session_data["fast_track_attendee_ids"] = attendee_ids
+                self.session_mgr.set_session(session_id, session_data)
 
         is_conflict_flow = any(w in response_text.lower() for w in [
             "cannot book",
@@ -1327,6 +1416,8 @@ class AIAgent:
             "intent": "ai_generated",
             "options": options,
             "option_type": option_type,
+            "candidate_options": candidate_options,
+            "selection_map": selection_map,
             "titled_sections": titled_sections,  # {"titles": [...], "agendas": [...]}
         }
 
@@ -1352,11 +1443,11 @@ class AIAgent:
 
             # Resolve time label → ISO start/end
             chosen_time_label = next((v for k, v in selections.items() if "time" in k.lower()), "")
-            chosen_topic = next((v for k, v in selections.items() if "topic" in k.lower()), "")
-            chosen_room = next((v for k, v in selections.items() if "room" in k.lower()), "Virtual")
+            chosen_topic = next((v for k, v in selections.items() if "topic" in k.lower() and v.strip() and v.strip() != "None"), draft.get("topic", ""))
+            chosen_room = next((v for k, v in selections.items() if "room" in k.lower()), draft.get("room", "Virtual"))
             # Presenter may be multi-select (comma-separated names) or single
-            chosen_presenter = next((v for k, v in selections.items() if "presenter" in k.lower()), "")
-            chosen_recurrence = next((v for k, v in selections.items() if "recurrence" in k.lower()), "none")
+            chosen_presenter = next((v for k, v in selections.items() if "presenter" in k.lower()), draft.get("presenter", ""))
+            chosen_recurrence = next((v for k, v in selections.items() if "recurrence" in k.lower()), draft.get("recurrence", "none"))
 
             # Match slot label back to ISO datetime — use stored map first
             start_iso, end_iso = "", ""
@@ -1426,6 +1517,7 @@ class AIAgent:
                 attendees=attendees,
                 recurrence=chosen_recurrence.lower() if chosen_recurrence != "none" else "none",
                 presenter=organiser.displayName if not chosen_presenter else chosen_presenter,
+                recurrence_end_date=next((v for k, v in selections.items() if "recurrence_end_date" in k.lower()), ""),
             )
 
             session_data["last_meeting"] = {
@@ -1437,6 +1529,8 @@ class AIAgent:
                 "location": result.get("location", location),
                 "attendees": attendees,
                 "join_url": result.get("join_url", ""),
+                "presenter": chosen_presenter,
+                "recurrence": chosen_recurrence
             }
             session_data.pop("draft_meeting", None)
             self.session_mgr.set_session(session_id, session_data)
@@ -1470,12 +1564,87 @@ class AIAgent:
             return {
                 "response": resp_text.strip(),
                 "intent": "meeting_booked",
-                "options": [],
+                "options": ["✏️ Edit Details"],
                 "option_type": "general",
                 "titled_sections": {},
                 "links": [join_url] if join_url else [],
                 "meeting_data": session_data["last_meeting"],
             }
+
+        # ── [UPDATE_MEETING] — fired by Meeting Editor 'Save' ─
+        if lower.startswith("[update_meeting]"):
+            self.session_mgr.set_status(session_id, "Updating meeting details...")
+            updates: dict = {}
+            for part in p.split("|"):
+                part = part.strip()
+                if "=" in part and not part.lower().startswith("[update"):
+                    key, _, val = part.partition("=")
+                    updates[key.strip()] = val.strip()
+
+            event_id = updates.get("event_id")
+            fingerprint = updates.get("fingerprint")
+            
+            from .mcp_server import update_meeting
+            
+            # Prepare update parameters
+            update_params = {
+                "event_id": event_id,
+                "fingerprint": fingerprint or "",
+                "new_subject": updates.get("subject"),
+                "new_agenda": updates.get("agenda"),
+                "new_location": updates.get("location"),
+                "new_recurrence": updates.get("recurrence"),
+                "new_presenter": updates.get("presenter"),
+                "new_recurrence_end_date": updates.get("recurrence_end_date")
+            }
+            
+            # Handle date/time update
+            if updates.get("date") and updates.get("time"):
+                try:
+                    dt_str = f"{updates['date']}T{updates['time']}:00"
+                    tz = ZoneInfo(DISPLAY_TIMEZONE)
+                    dt = datetime.fromisoformat(dt_str).replace(tzinfo=tz)
+                    start_iso = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    duration = int(updates.get("duration", 60))
+                    end_iso = (dt + timedelta(minutes=duration)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    update_params["new_start"] = start_iso
+                    update_params["new_end"] = end_iso
+                except:
+                    pass
+
+            result = update_meeting(**update_params)
+            
+            if result.get("status") == "updated":
+                # Update session memory
+                if "last_meeting" in session_data and session_data["last_meeting"].get("event_id") == event_id:
+                    session_data["last_meeting"].update({
+                        "subject": updates.get("subject", session_data["last_meeting"].get("subject")),
+                        "agenda": updates.get("agenda", session_data["last_meeting"].get("agenda")),
+                        "location": updates.get("location", session_data["last_meeting"].get("location")),
+                        "presenter": updates.get("presenter", session_data["last_meeting"].get("presenter")),
+                        "recurrence": updates.get("recurrence", session_data["last_meeting"].get("recurrence")),
+                    })
+                    if "new_start" in update_params:
+                        session_data["last_meeting"]["start"] = update_params["new_start"]
+                        session_data["last_meeting"]["end"] = update_params["new_end"]
+                    self.session_mgr.set_session(session_id, session_data)
+
+                return {
+                    "response": f"✅ The meeting **{updates.get('subject')}** has been updated successfully.",
+                    "intent": "meeting_updated",
+                    "options": ["✏️ Edit Details"],
+                    "option_type": "general",
+                    "titled_sections": {},
+                    "meeting_data": session_data.get("last_meeting")
+                }
+            else:
+                return {
+                    "response": f"❌ Failed to update meeting: {result.get('message', 'Unknown error')}",
+                    "intent": "update_failed",
+                    "options": [],
+                    "option_type": "general",
+                    "titled_sections": {},
+                }
 
         # Deterministic duplicate-update entry point from UI action button.
         if "please update existing meeting" in lower:
