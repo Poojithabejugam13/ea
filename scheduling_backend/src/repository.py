@@ -325,10 +325,10 @@ class UserRepository:
             # Standard overlap
             if cs < be and bs < ce:
                 return True
-            # Keep slot suggestions consistent with booking validation:
-            # avoid slots that start too soon after an existing meeting.
-            gap_mins = (cs - be).total_seconds() / 60
-            return 0 <= gap_mins <= buffer_mins
+            # Buffer check (both before and after)
+            gap_after = (cs - be).total_seconds() / 60
+            gap_before = (bs - ce).total_seconds() / 60
+            return (0 <= gap_after <= buffer_mins) or (0 <= gap_before <= buffer_mins)
 
         free_slots = []
         for (cs, ce) in candidates:
