@@ -18,7 +18,7 @@ interface Message {
   selectionMap?: Record<string, string>;
   isInteractive?: boolean;
   intent?: string;
-  finalSelections?: Record<string, string>;
+  finalSelections?: Record<string, any>;
 }
 
 interface DisambigPerson {
@@ -49,9 +49,6 @@ interface DisambigPerson {
                 <button *ngIf="msg.role === 'assistant' && i > 0" class="regenerate-btn" (click)="regenerate(i)" title="Regenerate response">
                   ↻ Resend
                 </button>
-                <button *ngIf="msg.role === 'assistant' && msg.meetingData" class="edit-btn" (click)="openMeetingEditor(msg.meetingData)" title="Edit meeting">
-                  ✎ Edit Meeting
-                </button>
               </ng-container>
               
               <ng-template #editTpl>
@@ -79,52 +76,43 @@ interface DisambigPerson {
                     <div class="section-container">
                       <p class="section-header">{{ section }}</p>
 
-                      <!-- DROPDOWN: Single-select topics/presenters -->
-                      <ng-container *ngIf="(section.toLowerCase().includes('presenter') || section.toLowerCase().includes('participant') || section.toLowerCase().includes('topic')) && !section.toLowerCase().includes('(multi)')">
+                      <!-- DROPDOWN: Single-select sections (Time, Topic, Recurrence, etc.) -->
+                      <ng-container *ngIf="!section.toLowerCase().includes('(multi)') && !isTextSection(section)">
                         <select
                           class="copilot-select"
                           (change)="onDropdownChange(section, $event)"
                           [value]="msg.finalSelections?.[section] || cardSelections[section] || ''"
-                          [disabled]="i !== messages.length - 1"
+                          [disabled]="i !== messages.length - 1 || loading || !!msg.finalSelections"
                         >
-                          <option value="" disabled selected>Select {{ section.toLowerCase().includes('topic') ? 'Topic' : 'Presenter' }}</option>
-                          <option *ngFor="let opt of filterOpts(msg.titledSections[section])" [value]="cleanOpt(opt)">
+                          <option value="" disabled selected>Select {{ getSectionTitle(section) }}</option>
+                          <option *ngFor="let opt of filterOpts(msg.titledSections?.[section] || [])" [value]="cleanOpt(opt)">
                             {{ cleanOpt(opt) }}
                           </option>
                         </select>
                       </ng-container>
 
-                      <!-- MULTI-SELECT or RADIO: Buttons -->
-                      <ng-container *ngIf="(!section.toLowerCase().includes('presenter') && !section.toLowerCase().includes('participant') && !section.toLowerCase().includes('topic') && !isTextSection(section)) || section.toLowerCase().includes('(multi)')">
-                        <div class="stacked-buttons">
-                          <button 
-                            *ngFor="let opt of filterOpts(msg.titledSections[section])" 
-                            class="choice-btn"
-                            [class.selected]="isChipSelected(section, opt) || msg.finalSelections?.[section]?.includes(cleanOpt(opt)) || cardSelections[section]?.includes(cleanOpt(opt)) || opt.startsWith('✅')"
-                            [disabled]="i !== messages.length - 1 || loading || !!msg.finalSelections"
-                            (click)="section.toLowerCase().includes('(multi)') ? onChipToggle(section, opt, msg) : onCardTap(section, opt, msg)"
-                          >
-                            <div class="radio-ring" *ngIf="!section.toLowerCase().includes('(multi)')">
-                              <div class="radio-dot" *ngIf="cardSelections[section] ? cardSelections[section] === cleanOpt(opt) : opt.startsWith('✅')"></div>
-                            </div>
-                            <div class="checkbox" *ngIf="section.toLowerCase().includes('(multi)')" [class.checked]="isChipSelected(section, opt) || msg.finalSelections?.[section]?.includes(cleanOpt(opt)) || cardSelections[section]?.includes(cleanOpt(opt)) || opt.startsWith('✅')">
-                              <span *ngIf="isChipSelected(section, opt) || msg.finalSelections?.[section]?.includes(cleanOpt(opt)) || cardSelections[section]?.includes(cleanOpt(opt)) || opt.startsWith('✅')">✓</span>
-                            </div>
-                            <span class="btn-label">{{ cleanOpt(opt) }}</span>
-                          </button>
-                        </div>
-                        
-                        <!-- Manual Topic Input if 'Other' is selected -->
-                        <div *ngIf="section.toLowerCase().includes('topic') && (msg.finalSelections?.[section] === 'Other' || cardSelections[section] === 'Other' || hasOtherSelected(msg.titledSections[section]))" class="text-input-area mt-2" style="margin-top: 10px;">
-                          <input 
-                            type="text" 
-                            class="card-text-input" 
-                            placeholder="Type topic here..." 
-                            [value]="msg.finalSelections?.['topicOtherText'] || topicOtherText"
-                            (input)="onTopicOtherInput($event)"
-                            [disabled]="i !== messages.length - 1 || loading || !!msg.finalSelections"
-                          >
-                        </div>
+                      <!-- MULTI-SELECT DROPDOWN: Collapsible list for presenters -->
+                      <ng-container *ngIf="section.toLowerCase().includes('(multi)') && !isTextSection(section)">
+                        <details class="multi-select-details">
+                          <summary class="multi-select-summary">
+                            {{ cardSelections[section] || 'Select Options' }}
+                          </summary>
+                          <div class="stacked-buttons dropdown-list">
+                            <button 
+                              *ngFor="let opt of filterOpts(msg.titledSections?.[section] || [])" 
+                              class="choice-btn"
+                              [class.selected]="isOptionSelected(msg, section, opt)"
+                              [disabled]="i !== messages.length - 1 || loading || !!msg.finalSelections"
+                              (click)="onChipToggle(section, opt, msg)"
+                            >
+                              <div class="checkbox" [class.checked]="isOptionSelected(msg, section, opt)">
+                                <span *ngIf="isOptionSelected(msg, section, opt)">✓</span>
+                              </div>
+
+                              <span class="btn-label">{{ cleanOpt(opt) }}</span>
+                            </button>
+                          </div>
+                        </details>
                       </ng-container>
 
                       <!-- TEXT INPUT section -->
@@ -141,17 +129,51 @@ interface DisambigPerson {
                         </div>
                       </ng-container>
 
+                      <!-- Manual Topic Input if 'Other' is selected -->
+                      <div *ngIf="section.toLowerCase().includes('topic') && (msg.finalSelections?.[section] === 'Other' || cardSelections[section] === 'Other' || hasOtherSelected(msg.titledSections[section]))" class="text-input-area mt-2" style="margin-top: 10px;">
+                        <input 
+                          type="text" 
+                          class="card-text-input" 
+                          placeholder="Type topic here..." 
+                          [value]="msg.finalSelections?.['topicOtherText'] || topicOtherText"
+                          (input)="onTopicOtherInput($event)"
+                          [disabled]="i !== messages.length - 1 || loading || !!msg.finalSelections"
+                        >
+                      </div>
+
+                      <!-- Until Date Input if Recurrence is more than once -->
+                      <div *ngIf="section.toLowerCase().includes('recurrence') && (cardSelections[section] && cardSelections[section] !== 'One-time' && cardSelections[section] !== 'once')" class="text-input-area mt-2" style="margin-top: 10px;">
+                        <label style="font-size: 0.85rem; font-weight: 600; color: #171717;">Until Date:</label>
+                        <input 
+                          type="date" 
+                          class="card-text-input" 
+                          [value]="recurrenceUntilDate"
+                          (input)="onUntilDateInput($event)"
+                          [disabled]="i !== messages.length - 1 || loading || !!msg.finalSelections"
+                          style="margin-top: 4px;"
+                        >
+                      </div>
+
+
                     </div>
                   </ng-container>
 
-                  <!-- Confirm & Book (disabled until all sections have a selection) -->
-                  <div class="confirm-row" *ngIf="i === messages.length - 1">
+                  <!-- Action row: Confirm Selection + Edit Details -->
+                  <div class="confirm-row" *ngIf="i === messages.length - 1 && !msg.finalSelections" style="display: flex; gap: 8px; margin-top: 12px;">
                     <button 
-                      class="confirm-btn" 
-                      [disabled]="!isGatheringComplete(msg) || loading || !!msg.finalSelections"
-                      (click)="onConfirmCard(msg)"
+                      class="edit-action-btn" 
+                      [disabled]="loading"
+                      (click)="openEditorFromCard(msg)"
                     >
-                      ✅ Confirm & Book
+                      ✏️ Edit Details
+                    </button>
+                    <button 
+                      class="confirm-btn proceed-btn" 
+                      [disabled]="!isGatheringComplete(msg) || loading"
+                      (click)="onConfirmCard(msg)"
+                      style="flex: 1.5; border-radius: 8px;"
+                    >
+                      Confirm Selection
                     </button>
                   </div>
                 </div>
@@ -164,23 +186,25 @@ interface DisambigPerson {
                       *ngFor="let opt of (msg.options || [])" 
                       class="choice-btn"
                       [class.proceed-btn]="opt.startsWith('Proceed with original')"
-                      [disabled]="i !== messages.length - 1 || loading"
-                      (click)="onConflictTap(opt)"
+                      [disabled]="i !== messages.length - 1 || loading || !!msg.finalSelections"
+                      (click)="onConflictTap(opt, msg)"
                     >
                       {{ opt }}
                     </button>
                   </div>
                 </div>
 
-                <!-- EDIT GRID (Post-booking 2-column grid) -->
-                <div *ngIf="msg.optionType === 'edit_grid'" class="edit-grid">
+                <!-- DRAFT REVIEW / EDIT GRID (2-column action row) -->
+                <div *ngIf="msg.optionType === 'edit_grid'" class="action-btn-row" style="margin-top: 12px; display: flex; gap: 8px;">
                   <button 
                     *ngFor="let opt of msg.options" 
-                    class="edit-btn"
-                    [disabled]="i !== messages.length - 1 || loading"
-                    (click)="handleEditTapped(opt, msg.meetingData)"
+                    [class]="opt.includes('Proceed') ? 'proceed-action-btn' : (opt.includes('Edit') ? 'edit-action-btn' : 'choice-btn')"
+                    [disabled]="i !== messages.length - 1 || loading || !!msg.finalSelections"
+                    (click)="handleEditTapped(opt, msg.meetingData, msg)"
                   >
-                    {{ opt }}
+                    <span *ngIf="opt.includes('Edit')">✏️ </span>
+                    <span *ngIf="opt.includes('Proceed')">✅ </span>
+                    {{ opt.replace('Edit ', '').replace('Proceed with booking', 'Proceed') }}
                   </button>
                 </div>
 
@@ -193,7 +217,8 @@ interface DisambigPerson {
                     <div
                       *ngFor="let p of getDisambigPeople(msg.options || [])"
                       class="person-row"
-                      [class.selected]="isPersonSelected(p)"
+                      [class.selected]="isPersonSelected(p, msg)"
+                      [style.pointer-events]="msg.finalSelections ? 'none' : 'auto'"
                       (click)="onPersonTap(p, msg, i)"
                     >
                       <div class="person-details">
@@ -203,14 +228,14 @@ interface DisambigPerson {
                           <span *ngIf="p.email" class="person-email">📧 {{ p.email }}</span>
                         </div>
                       </div>
-                      <div class="checkbox" [class.checked]="isPersonSelected(p)">
-                        <span *ngIf="isPersonSelected(p)">✓</span>
+                      <div class="checkbox" [class.checked]="isPersonSelected(p, msg)">
+                        <span *ngIf="isPersonSelected(p, msg)">✓</span>
                       </div>
                     </div>
                   </div>
                   <button
                     class="disambig-confirm-btn"
-                    [disabled]="selectedDisambigPeople.size === 0 || loading || i !== messages.length - 1"
+                    [disabled]="selectedDisambigPeople.size === 0 || loading || i !== messages.length - 1 || !!msg.finalSelections"
                     (click)="confirmDisambig(msg)"
                   >
                     Confirm Selection ({{selectedDisambigPeople.size}})
@@ -222,8 +247,8 @@ interface DisambigPerson {
                   <button 
                     *ngFor="let opt of msg.options" 
                     class="choice-btn"
-                    [disabled]="i !== messages.length - 1 || loading"
-                    (click)="sendAction(opt)"
+                    [disabled]="i !== messages.length - 1 || loading || !!msg.finalSelections"
+                    (click)="sendAction(opt, msg)"
                   >
                     {{ opt }}
                   </button>
@@ -257,6 +282,7 @@ interface DisambigPerson {
               [(ngModel)]="prompt" 
               (keyup.enter)="sendMessage()" 
               placeholder="Message ARIA..."
+              spellcheck="true"
             >
             <button class="send-btn" (click)="sendMessage()" [disabled]="loading">
               <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
@@ -307,8 +333,8 @@ interface DisambigPerson {
 
     /* ── Dropdown ── */
     .copilot-select {
-      width: 100%; padding: 12px 16px; border-radius: 12px; border: 1px solid #e2e8f0;
-      background: #f8fafc; color: #1e293b; font-size: 0.95rem; outline: none; margin-top: 10px;
+      width: 100%; padding: 8px 12px; border-radius: 8px; border: 1px solid #e2e8f0;
+      background: #f8fafc; color: #1e293b; font-size: 0.9rem; outline: none; margin-top: 4px;
       appearance: none; cursor: pointer; transition: all 0.2s;
       background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2364748b'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
       background-repeat: no-repeat; background-position: right 12px center; background-size: 16px;
@@ -401,23 +427,39 @@ interface DisambigPerson {
     }
     .regenerate-btn:hover { background: #f5f5f5; border-color: #bdbdbd; color: #242424; }
 
-    .interactive-area { margin-top: 15px; width: 100%; padding: 0; background: transparent; border: none; box-shadow: none; }
-    .section-header { font-weight: 600; margin-bottom: 8px; color: #171717; }
+    .interactive-area { margin-top: 8px; width: 100%; padding: 0; background: transparent; border: none; box-shadow: none; }
+    .section-header { font-size: 0.85rem; font-weight: 600; margin-bottom: 4px; color: #64748b; margin-top: 8px; }
+    .section-container { margin-bottom: 0; }
     
+    .proceed-action-btn { 
+      background: #5b5fc7; color: white; border: none; padding: 10px 16px; 
+      border-radius: 8px; font-weight: 600; cursor: pointer; flex: 1; transition: 0.2s;
+    }
+    .proceed-action-btn:hover:not(:disabled) { background: #4a4d9e; transform: translateY(-1px); }
+    .proceed-action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .edit-action-btn { 
+      background: #ffffff; color: #5b5fc7; border: 1px solid #5b5fc7; padding: 10px 16px; 
+      border-radius: 8px; font-weight: 600; cursor: pointer; flex: 1; transition: 0.2s;
+    }
+    .edit-action-btn:hover:not(:disabled) { background: #f5f5f5; }
+    .edit-action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
     .choice-btn { 
       background: transparent; 
       color: #171717; 
       border: 1px solid #e5e7eb; 
-      border-radius: 8px; 
-      padding: 10px 14px; 
-      font-size: 0.95rem; 
+      border-radius: 6px; 
+      padding: 6px 10px; 
+      font-size: 0.9rem; 
       cursor: pointer; 
       text-align: left; 
-      transition: all 0.2s;
+      transition: all 0.1s;
       display: flex;
       align-items: center;
-      gap: 12px;
-      margin-bottom: 8px;
+      gap: 10px;
+      margin-bottom: 4px;
+      width: 100%;
     }
 
     .choice-btn:hover { background: #f9fafb; }
@@ -433,9 +475,13 @@ interface DisambigPerson {
     .choice-btn.selected .radio-ring { border-color: #5b5fc7; }
     .radio-dot { width: 10px; height: 10px; background: #5b5fc7; border-radius: 50%; }
     
-    .confirm-btn { background: #5b5fc7; color: white; border: none; border-radius: 4px; padding: 10px 20px; font-weight: 600; cursor: pointer; width: 100%; margin-top: 16px; transition: 0.2s; }
+    .action-btn-row { display: flex; gap: 10px; margin-top: 10px; }
+    .confirm-btn { background: #5b5fc7; color: white; border: none; border-radius: 4px; padding: 10px 20px; font-weight: 600; cursor: pointer; flex: 1; transition: 0.2s; }
     .confirm-btn:hover:not(:disabled) { background: #4a4d9e; }
     .confirm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .edit-details-btn { background: #ffffff; color: #5b5fc7; border: 2px solid #5b5fc7; border-radius: 4px; padding: 10px 20px; font-weight: 600; cursor: pointer; flex: 1; transition: 0.2s; }
+    .edit-details-btn:hover:not(:disabled) { background: #f0f0ff; }
+    .edit-details-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
     .dup-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
     .dup-update { background: linear-gradient(135deg, #0f4c75, #1b6ca8); color: white; border: none; border-radius: 8px; padding: 12px; font-weight: 600; cursor: pointer; }
@@ -489,6 +535,26 @@ interface DisambigPerson {
     .disambig-confirm-btn:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); }
     .disambig-confirm-btn:disabled { opacity: 0.4; cursor: not-allowed; }
     
+    /* Multi-select Dropdown */
+    .multi-select-details { width: 100%; margin-top: 4px; position: relative; }
+    .multi-select-summary {
+      width: 100%; padding: 8px 12px; border-radius: 8px; border: 1px solid #e2e8f0;
+      background: #f8fafc; color: #1e293b; font-size: 0.9rem; cursor: pointer;
+      list-style: none; display: flex; justify-content: space-between; align-items: center;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .multi-select-summary::-webkit-details-marker { display: none; }
+    .multi-select-summary::after {
+      content: ""; width: 12px; height: 12px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2364748b'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+      background-size: contain; background-repeat: no-repeat;
+    }
+    .dropdown-list {
+      position: absolute; top: 100%; left: 0; width: 100%; max-height: 200px; overflow-y: auto;
+      background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; z-index: 100;
+      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); padding: 4px; margin-top: 2px;
+    }
+
     .suggestion-dropdown {
       background: rgba(15, 23, 42, 0.85);
       backdrop-filter: blur(12px);
@@ -636,6 +702,12 @@ export class ChatComponent {
     this.topicOtherText = (event.target as HTMLInputElement).value;
   }
 
+  recurrenceUntilDate = '';
+
+  onUntilDateInput(event: Event) {
+    this.recurrenceUntilDate = (event.target as HTMLInputElement).value;
+  }
+
   onDropdownChange(section: string, event: Event) {
     const val = (event.target as HTMLSelectElement).value;
     this.cardSelections[section] = val;
@@ -656,6 +728,33 @@ export class ChatComponent {
   /** True if a chip is selected in the multi-select area */
   isChipSelected(section: string, opt: string): boolean {
     return !!this.multiSelections[section]?.has(this.cleanOpt(opt));
+  }
+
+  isOptionSelected(msg: Message, section: string, opt: string): boolean {
+    const cleaned = this.cleanOpt(opt);
+    
+    if (msg.finalSelections) {
+      const finalVal = msg.finalSelections[section];
+      if (!finalVal) {
+        return opt.startsWith('✅');
+      }
+      if (section.toLowerCase().includes('presenter') || section.toLowerCase().includes('participant') || section.toLowerCase().includes('(multi)')) {
+        return finalVal.split(', ').map((s: string) => s.trim()).includes(cleaned);
+      }
+      return finalVal === cleaned;
+    }
+    
+    if (section.toLowerCase().includes('presenter') || section.toLowerCase().includes('participant') || section.toLowerCase().includes('(multi)')) {
+      if (this.multiSelections[section] && this.multiSelections[section].size > 0) {
+        return this.multiSelections[section].has(cleaned);
+      }
+    } else {
+      if (this.cardSelections[section]) {
+        return this.cardSelections[section] === cleaned;
+      }
+    }
+    
+    return opt.startsWith('✅');
   }
 
   /** Toggle a chip selection for multi-select sections */
@@ -686,6 +785,13 @@ export class ChatComponent {
     return opt.startsWith('✅ ') ? opt.replace('✅ ', '') : opt;
   }
 
+  getSectionTitle(section: string): string {
+    if (!section) return 'Option';
+    const parts = section.split(' ');
+    const last = parts[parts.length - 1] || 'Option';
+    return last.replace('(', '').replace(')', '') || 'Option';
+  }
+
   /** Filter out any blank/whitespace-only entries from a section's option array */
   filterOpts(opts: any[]): string[] {
     return (opts || []).filter((o: string) => o && o.trim().length > 0);
@@ -714,8 +820,9 @@ export class ChatComponent {
   }
 
   /** Handle conflict card tap — alternate slot or proceed original */
-  onConflictTap(opt: string) {
-    if (this.loading) return;
+  onConflictTap(opt: string, msg: Message) {
+    if (this.loading || !!msg.finalSelections?.['choice']) return;
+    msg.finalSelections = { choice: opt };
     if (opt.startsWith('Proceed with original')) {
       this.sendAction('Continue with given time anyway');
     } else {
@@ -738,8 +845,11 @@ export class ChatComponent {
         parts.push(`${section}=${value}`);
       }
     }
+    if (this.recurrenceUntilDate) {
+      parts.push(`Until Date=${this.recurrenceUntilDate}`);
+    }
     const payload = parts.join(' | ');
-    msg.finalSelections = { ...this.cardSelections, topicOtherText: this.topicOtherText };
+    msg.finalSelections = { ...this.cardSelections, topicOtherText: this.topicOtherText, choice: 'Confirmed' };
     this.cardSelections = {}; // reset for next card
     this.multiSelections = {}; // reset multi-select too
     this.topicOtherText = '';
@@ -769,13 +879,15 @@ export class ChatComponent {
     return true;
   }
 
-  handleEditTapped(option: string, meetingData: any) {
-    if (this.loading) return;
+  handleEditTapped(option: string, meetingData: any, msg: Message) {
+    if (this.loading || !!msg.finalSelections?.['choice']) return;
     if (option.includes('Cancel')) {
+      msg.finalSelections = { choice: 'Cancel' };
       this.sendAction('Cancel meeting');
       return;
     }
     if (option.includes('Proceed')) {
+      msg.finalSelections = { choice: 'Proceed' };
       this.sendAction('Proceed with booking');
       return;
     }
@@ -799,8 +911,12 @@ export class ChatComponent {
     this.processQuery(userText);
   }
 
-  sendAction(actionText: string) {
-    if (this.loading) return;
+  sendAction(actionText: string, msg?: Message) {
+    if (this.loading || (msg && !!msg.finalSelections?.['choice'])) return;
+    if (msg) {
+      if (!msg.finalSelections) msg.finalSelections = {};
+      msg.finalSelections['choice'] = actionText;
+    }
     this.messages.push({ role: 'user', content: actionText });
     this.scrollToBottom();
     this.processQuery(actionText);
@@ -820,21 +936,30 @@ export class ChatComponent {
     const newContent = this.editPrompt.trim();
     if (!newContent) return;
 
-    // Remove all subsequent messages (ChatGPT style)
+    // Remove all subsequent messages (ChatGPT style branching)
     this.messages.splice(index);
     this.messages.push({ role: 'user', content: newContent });
     this.editingIndex = null;
     this.editPrompt = '';
 
+    // Pass the actual index to truncateHistory so the backend keeps prior conversation
+    // but cleanly branches from the edited message. The backend will still pop draft_meeting
+    // to prevent pollution.
     this.processQuery(newContent, index);
   }
 
+  private querySub?: Subscription;
+
   processQuery(q: string, truncateHistory?: number) {
+    if (this.querySub) {
+      this.querySub.unsubscribe();
+    }
+    
     this.loading = true;
     this.loadingMessage = 'ARIA is thinking';
     this.scrollToBottom();
 
-    this.api.processMessage(q, this.sessionId, truncateHistory).subscribe({
+    this.querySub = this.api.processMessage(q, this.sessionId, truncateHistory).subscribe({
       next: (res) => {
         this.loading = false;
 
@@ -865,14 +990,33 @@ export class ChatComponent {
         }
 
         const isInteractive = (finalOptions && finalOptions.length > 0) ||
-          ['duplicate_action', 'title_and_agenda', 'attendee_confirm', 'timeslot', 'conflict', 'attendee', 'attendee_disambiguation', 'gathering_card'].includes(finalOptionType);
+          ['duplicate_action', 'title_and_agenda', 'attendee_confirm', 'timeslot', 'conflict', 'attendee', 'attendee_disambiguation', 'gathering_card', 'slot_selection', 'group_selection'].includes(finalOptionType);
 
         // Reset disambiguation state for each new response
         this.selectedDisambigPeople.clear();
         this.disambigCache.clear();
         this.disambigBulkMode = true; // Default to multi-select
 
+        // Disable and deactivate all previous interactive assistant cards.
+        // For scheduling/gathering cards, also clear slot content so only
+        // a minimal label remains — prevents confusing parallel card clutter.
+        for (let m of this.messages) {
+          if (m.role === 'assistant') {
+            m.isInteractive = false;
+            if (!m.finalSelections) {
+              m.finalSelections = {};
+            }
+            // Collapse gathering/timeslot cards fully — wipe slot options
+            if (m.optionType === 'gathering_card' || m.optionType === 'timeslot' || m.optionType === 'conflict') {
+              m.titledSections = {};
+              m.options = [];
+            }
+          }
+        }
+
+
         this.messages.push({
+
           role: 'assistant',
           content: finalResponse,
           links: links,
@@ -956,6 +1100,24 @@ export class ChatComponent {
     this.sendAction(`Select attendee: ${eid}`);
   }
 
+  // Track whether the editor was opened from a gathering card (vs post-booking edit)
+  private editorOpenedFromCard = false;
+  // Store the card message reference so Proceed can be triggered after edit-save
+  private pendingCardMsg: Message | null = null;
+
+  /**
+   * Open the editor from the gathering card — "Edit Details" button.
+   * After saving, the booking is triggered directly (meet link generated),
+   * without looping back to another Edit/Proceed prompt.
+   */
+  openEditorFromCard(msg: Message) {
+    this.editorOpenedFromCard = true;
+    this.pendingCardMsg = msg;
+    // Build prefill from card selections + meeting_data
+    const md = msg.meetingData || {};
+    this.openMeetingEditor(md);
+  }
+
   openMeetingEditor(meetingData: any) {
     const start = new Date(meetingData?.start || new Date().toISOString());
     const end = new Date(meetingData?.end || new Date(start.getTime() + 60 * 60000));
@@ -990,23 +1152,57 @@ export class ChatComponent {
   onScheduleFormSubmit(event: any) {
     this.closeMeetingEditor();
 
-    let attendeesText = '';
-    if (event.attendees && event.attendees.length > 0) {
-     attendeesText = event.selectedAttendees.map((a: any) => `${a.name} (EID: ${a.id}) (Email: ${a.email}) (${a.importance})`).join(', ');
-    }
+    const selectedAttendees: any[] = event.selectedAttendees || event.attendees || [];
+    const attendeesText = selectedAttendees.map((a: any) =>
+      typeof a === 'string'
+        ? a
+        : `${a.name} (EID: ${a.id}) (Email: ${a.email}) (${a.importance || 'required'})`
+    ).join(', ');
 
-    const promptText = `[structured form submission]
-Please update the meeting.
-Event ID: ${event.eventId || 'N/A'}
+    // If there is no event ID, this is a Draft.
+    // The user requested that after saving a draft edit, it should directly book
+    // and generate the meet link, without returning to another Edit/Proceed loop.
+    const isDraft = !event.eventId || event.eventId === 'N/A';
+
+    if (this.editorOpenedFromCard || isDraft) {
+      this.editorOpenedFromCard = false;
+      this.pendingCardMsg = null;
+
+      const directBookingPayload = `[DIRECT_BOOKING_FROM_FORM]
 Topic: ${event.subject}
 Date: ${event.date}
 Time: ${event.time}
+Timezone: ${event.timezone}
+Duration: ${event.duration} mins
+Recurrence: ${event.recurrence}
+Room: ${event.room || 'Virtual'}
+Location/Link: ${event.location || 'Virtual'}
+Presenter: ${event.presenter || ''}
+Attendees: ${attendeesText}
+start: ${event.start || ''}
+end: ${event.end || ''}`;
+
+      this.messages.push({ role: 'user', content: '📋 Booking with updated details from form...' });
+      this.processQuery(directBookingPayload);
+      return;
+    }
+
+    // Otherwise: post-booking edit flow (update existing meeting)
+    const promptText = `[structured form submission]
+Please update the meeting.
+Event ID: ${event.eventId}
+Topic: ${event.subject}
+Date: ${event.date}
+Time: ${event.time}
+Timezone: ${event.timezone}
 Duration: ${event.duration} mins
 Recurrence: ${event.recurrence}
 Room: ${event.room || 'Not specified'}
-Location: ${event.location || 'Not specified'}
+Location/Link: ${event.location || 'Virtual'}
 Presenter: ${event.presenter || 'Not specified'}
-Attendees: ${attendeesText}`;
+Attendees: ${attendeesText}
+start: ${event.start || ''}
+end: ${event.end || ''}`;
 
     this.messages.push({ role: 'user', content: 'Updating meeting details via form...' });
     this.processQuery(promptText);
@@ -1020,13 +1216,24 @@ Attendees: ${attendeesText}`;
 
   regenerate(index: number) {
     if (index === 0) return;
-    const prevMsg = this.messages[index - 1];
-    if (prevMsg.role !== 'user') return;
+    
+    // Find the nearest previous user message
+    let userMsgIndex = -1;
+    for (let i = index - 1; i >= 0; i--) {
+      if (this.messages[i].role === 'user') {
+        userMsgIndex = i;
+        break;
+      }
+    }
+    
+    if (userMsgIndex === -1) return;
 
-    const userText = prevMsg.content;
-    // Remove the current AI response and everything after
-    this.messages.splice(index);
-    this.processQuery(userText);
+    const userText = this.messages[userMsgIndex].content;
+    // Remove the current AI response and everything after the user message
+    this.messages.splice(userMsgIndex + 1);
+    
+    // Pass userMsgIndex to truncateHistory so backend properly branches
+    this.processQuery(userText, userMsgIndex);
   }
 
   scrollToBottom() {
@@ -1043,11 +1250,25 @@ Attendees: ${attendeesText}`;
    * Parse raw option strings like "Select: John Doe (Engineering) - EID: 101"
    * into structured DisambigPerson objects. Results are cached.
    */
-  getDisambigPeople(options: string[]): DisambigPerson[] {
-    return options.map(label => {
+  getDisambigPeople(options: any[]): DisambigPerson[] {
+    return (options || []).map(item => {
+      // If it's already an object (new format), just map it
+      if (typeof item === 'object' && item !== null) {
+        const eid = item.eid || item.id || '';
+        return {
+          label: item.name || '',
+          name: item.name || '',
+          dept: item.department || item.dept || '',
+          email: item.email || '',
+          eid: eid,
+          selected: false
+        };
+      }
+
+      // Legacy string parsing
+      const label = String(item);
       if (this.disambigCache.has(label)) return this.disambigCache.get(label)!;
       
-      // Robust extraction for email and eid even if the full regex fails
       const emailMatch = label.match(/Email:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i) || label.match(/Email:\s*([^\s]+)/i);
       const eidMatch = label.match(/EID:\s*(\w+)/i);
       const nameMatch = label.match(/Select:\s*(.+?)\s*\(/i);
@@ -1066,7 +1287,10 @@ Attendees: ${attendeesText}`;
     });
   }
 
-  isPersonSelected(p: DisambigPerson): boolean {
+  isPersonSelected(p: DisambigPerson, msg?: Message): boolean {
+    if (msg?.finalSelections?.['eids']) {
+      return msg.finalSelections['eids'].includes(p.eid);
+    }
     return this.selectedDisambigPeople.has(p.eid);
   }
 
@@ -1101,6 +1325,11 @@ Attendees: ${attendeesText}`;
   confirmDisambig(msg: Message) {
     if (this.selectedDisambigPeople.size === 0) return;
     const eids = Array.from(this.selectedDisambigPeople);
+    
+    // SAVE THE FINAL SELECTION IN THE MESSAGE ITSELF!
+    if (!msg.finalSelections) msg.finalSelections = {};
+    msg.finalSelections['eids'] = eids;
+    
     // Build a human-readable confirmation with names
     const people = this.getDisambigPeople(msg.options || []);
     const names = eids.map(eid => {
@@ -1108,6 +1337,7 @@ Attendees: ${attendeesText}`;
       return p ? `${p.name} (EID: ${eid})` : `EID: ${eid}`;
     });
     const actionText = `Select attendee: ${eids.join(',')} | ${names.join(', ')}`;
+    msg.finalSelections['choice'] = actionText;
     this.selectedDisambigPeople.clear();
     this.disambigCache.clear();
     this.sendAction(actionText);

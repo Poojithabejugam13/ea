@@ -15,8 +15,30 @@ from typing import List, Optional, Dict
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 import re
+import time
 import uuid
 from .models import User, Event, EventTime, AttendeeEntry, EmailAddress, OnlineMeeting, Room
+from .db_client import get_user_events_all_db
+
+# ---------------------------------------------------------------------------
+# Per-process event cache — TTL 2 s is enough to deduplicate all calls within
+# a single request chain without risking stale data across requests.
+# ---------------------------------------------------------------------------
+_EVENT_CACHE: Dict[str, tuple] = {}   # uid → (timestamp, List[Event])
+_EVENT_CACHE_TTL = 2.0                # seconds
+
+def _get_cached_events(uid: str) -> Optional[List]:
+    entry = _EVENT_CACHE.get(uid)
+    if entry and (time.monotonic() - entry[0]) < _EVENT_CACHE_TTL:
+        return entry[1]
+    return None
+
+def _set_cached_events(uid: str, events: list):
+    _EVENT_CACHE[uid] = (time.monotonic(), events)
+
+# Static cache for subject suggestions (never changes within a process run)
+_SUBJECT_SUGGESTIONS_CACHE: Optional[List[str]] = None
+
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +234,32 @@ MOCK_EVENTS["103"].append(
 # Notification log (stub — mirrors Graph sendMail)
 NOTIFICATION_LOG: List[dict] = []
 
+# ── Dynamic today-dated events ───────────────────────────────────────────────
+# Ensures free-slot checks block already-occupied slots on the current date
+# regardless of when the server starts (all static mock data is past-dated).
+from datetime import timezone, timedelta
+_IST = timezone(timedelta(hours=5, minutes=30))
+_TODAY_IST = datetime.now(_IST).strftime("%Y-%m-%d")
+
+# Poojitha (103) + Radha Krishna (109): Finance Review at 1:30 PM IST (08:00 UTC)
+_RADHA_MEETING = Event(
+    id="e_today_radha_1",
+    subject="Finance Review",
+    bodyPreview="Finance team sync",
+    start=EventTime(dateTime=f"{_TODAY_IST}T08:00:00Z", timeZone="UTC"),  # 1:30 PM IST
+    end=EventTime(dateTime=f"{_TODAY_IST}T09:00:00Z", timeZone="UTC"),    # 2:30 PM IST
+    location="Virtual",
+    attendees=[],
+    organizer=EmailAddress(address="poojitha.reddy@test.com", name="Poojitha Reddy"),
+)
+
+for _uid in ("103", "109"):
+    if _uid not in MOCK_EVENTS:
+        MOCK_EVENTS[_uid] = []
+    MOCK_EVENTS[_uid].append(_RADHA_MEETING)
+
+
+
 
 # ---------------------------------------------------------------------------
 # Fuzzy matching helpers
@@ -245,11 +293,14 @@ class UserRepository:
     def search_users(self, query: str) -> List[User]:
         """Fuzzy search across displayName, department, jobTitle.
         Handles typos, caps, special chars, partial names.
+        Also matches when spaces are omitted (e.g. 'sitaram' -> 'Sita Ram').
         """
         if not query:
             return MOCK_USERS  # Support dropdown on focus
         
         q_norm = _normalize(query)
+        # Space-stripped version of query for matching collapsed names like "sitaram" → "Sita Ram"
+        q_stripped = q_norm.replace(" ", "")
         results = []
         for user in MOCK_USERS:
             # Exact substring match first
@@ -257,6 +308,16 @@ class UserRepository:
             any_norm = [_normalize(f) for f in fields]
             if any(q_norm in n for n in any_norm):
                 results.append((1.0, user))
+                continue
+            # Space-collapsed match: e.g. "sitaram" matches "sita ram"
+            name_stripped = _normalize(user.displayName).replace(" ", "")
+            if q_stripped and q_stripped == name_stripped:
+                results.append((0.95, user))
+                continue
+            # Partial first-name match for the space-stripped query
+            first_name = _normalize(user.displayName).split()[0]
+            if q_stripped and q_stripped == first_name:
+                results.append((0.9, user))
                 continue
 
         results.sort(key=lambda x: -x[0])
@@ -272,7 +333,33 @@ class UserRepository:
         return [u for u in MOCK_USERS if title_norm in _normalize(u.jobTitle)]
 
     def get_events_for_user(self, user_id: str) -> List[Event]:
-        return list(MOCK_EVENTS.get(user_id, []))
+        cached = _get_cached_events(user_id)
+        if cached is not None:
+            return cached
+
+        events = list(MOCK_EVENTS.get(user_id, []))
+        user = self.get_user_by_id(user_id)
+        if user:
+            db_rows = get_user_events_all_db(user.displayName)
+            for row in db_rows:
+                if any(e.start.dateTime == row["start"] for e in events):
+                    continue
+                ev = Event(**{
+                    "id": row["id"],
+                    "subject": row["subject"],
+                    "bodyPreview": "",
+                    "start": {"dateTime": row["start"], "timeZone": "UTC"},
+                    "end": {"dateTime": row["end"], "timeZone": "UTC"},
+                    "location": row.get("location", "Virtual"),
+                    "attendees": [],
+                    "organizer": {"address": "", "name": row["organiser"]},
+                    "onlineMeeting": {"joinUrl": ""},
+                    "isOnlineMeeting": True,
+                })
+                events.append(ev)
+        _set_cached_events(user_id, events)
+        return events
+
 
     def get_events_on_date(self, user_id: str, date_str: str) -> List[Event]:
         """Return events overlapping a specific date (YYYY-MM-DD, UTC)."""
@@ -290,31 +377,47 @@ class UserRepository:
         """
         # Generate candidate slots: 08:00 to 18:00 every 30 min
         base = datetime.fromisoformat(f"{date_str}T08:00:00+00:00")
+        now_utc = datetime.now(timezone.utc)
+
+        # Fast-skip: if the entire day is already in the past, return early
+        day_end = base.replace(hour=18, minute=0, second=0)
+        if day_end < now_utc:
+            return []
+
         candidates = []
         for i in range(0, 20):
             s = base + timedelta(minutes=30 * i)
             e = s + timedelta(minutes=duration_mins)
             if e.hour > 18:
                 break
+            if s < now_utc:   # skip past slots
+                continue
             candidates.append((s, e))
+
+        if not candidates:
+            return []
 
         def _p(v: str):
             dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
             return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
+        # Build busy intervals concurrently per user
         busy: Dict[str, List[tuple]] = {}
-        for uid in user_ids:
-            busy[uid] = []
-            for ev in self.get_events_for_user(uid):
-                ev_s = _p(ev.start.dateTime)
-                ev_e = _p(ev.end.dateTime)
-                busy[uid].append((ev_s, ev_e))
+        from concurrent.futures import ThreadPoolExecutor
+        
+        def _fetch_busy(uid: str):
+            return uid, [
+                (_p(ev.start.dateTime), _p(ev.end.dateTime))
+                for ev in self.get_events_for_user(uid)
+            ]
+
+        with ThreadPoolExecutor(max_workers=min(10, len(user_ids))) as executor:
+            for uid, busy_slots in executor.map(_fetch_busy, user_ids):
+                busy[uid] = busy_slots
 
         def _has_conflict_or_buffer(cs, ce, bs, be) -> bool:
-            # Standard overlap
             if cs < be and bs < ce:
                 return True
-            # Buffer check (both before and after)
             gap_after = (cs - be).total_seconds() / 60
             gap_before = (bs - ce).total_seconds() / 60
             return (0 <= gap_after <= buffer_mins) or (0 <= gap_before <= buffer_mins)
@@ -388,21 +491,22 @@ class UserRepository:
 
     def get_subject_suggestions(self, query: str = "") -> List[str]:
         """Extract unique subjects and filter with fuzzy logic."""
-        all_subjects = []
-        for events in MOCK_EVENTS.values():
-            for e in events:
-                all_subjects.append(e.subject)
-        
-        defaults = ["Sprint Planning", "Project Kickoff", "1:1 Sync", "Architecture Review", "Security Audit", "Design Brainstorming"]
-        all_subjects.extend(defaults)
-        unique = sorted(list(set(all_subjects)))
-        
+        global _SUBJECT_SUGGESTIONS_CACHE
+        if _SUBJECT_SUGGESTIONS_CACHE is None:
+            all_subjects = []
+            for events in MOCK_EVENTS.values():
+                for e in events:
+                    all_subjects.append(e.subject)
+            defaults = ["Sprint Planning", "Project Kickoff", "1:1 Sync", "Architecture Review", "Security Audit", "Design Brainstorming"]
+            all_subjects.extend(defaults)
+            _SUBJECT_SUGGESTIONS_CACHE = sorted(list(set(all_subjects)))
+
         if not query:
-            return unique
-        
+            return _SUBJECT_SUGGESTIONS_CACHE
+
         q_norm = _normalize(query)
         scored = []
-        for s in unique:
+        for s in _SUBJECT_SUGGESTIONS_CACHE:
             s_norm = _normalize(s)
             if q_norm in s_norm:
                 scored.append((1.0, s))
@@ -410,7 +514,6 @@ class UserRepository:
                 score = _fuzzy_score(q_norm, s_norm)
                 if score > 0.4:
                     scored.append((score, s))
-        
         scored.sort(key=lambda x: -x[0])
         return [s for _, s in scored]
 

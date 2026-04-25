@@ -79,7 +79,7 @@ def insert_meeting(
         conn.commit()
         cur.close()
         conn.close()
-        print(f"[DB] Meeting logged → {meeting_id}  ({meeting_title})")
+        print(f"[DB] Meeting logged -> {meeting_id}  ({meeting_title})")
         return meeting_id
     except Exception as e:
         print(f"[DB ERROR] Failed to log meeting: {e}")
@@ -127,7 +127,7 @@ def update_meeting_db(
         conn.commit()
         cur.close()
         conn.close()
-        print(f"[DB] Meeting updated → {meeting_id}")
+        print(f"[DB] Meeting updated -> {meeting_id}")
         return True
     except Exception as e:
         print(f"[DB ERROR] Failed to update meeting: {e}")
@@ -144,7 +144,7 @@ def delete_meeting_db(meeting_id: str) -> bool:
         conn.commit()
         cur.close()
         conn.close()
-        print(f"[DB] Meeting deleted → {meeting_id}")
+        print(f"[DB] Meeting deleted -> {meeting_id}")
         return True
     except Exception as e:
         print(f"[DB ERROR] Failed to delete meeting: {e}")
@@ -187,3 +187,40 @@ def get_user_schedule_db(user_name: str, target_date: str) -> list[dict]:
     except Exception as e:
         print(f"[DB ERROR] Failed to read schedule: {e}")
         return []
+
+
+def get_user_events_all_db(user_name: str) -> list[dict]:
+    """Fetch all meetings from PostgreSQL for a specific user without date filters."""
+    sql = "SELECT id, meeting_title, start_date, end_date, participants, organiser_name FROM meetings"
+    try:
+        conn = _get_connection()
+        cur = conn.cursor()
+        cur.execute(sql)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        results = []
+        for r in rows:
+            m_id, title, start, end, parts_json, org = r
+            try:
+                parts = json.loads(parts_json) if isinstance(parts_json, str) else list(parts_json)
+            except Exception:
+                parts = []
+            
+            if user_name == org or user_name in parts:
+                results.append({
+                    "id": m_id,
+                    "subject": title,
+                    "start": start,
+                    "end": end,
+                    "location": "Virtual",
+                    "participants": parts,
+                    "organiser": org,
+                    "is_db": True
+                })
+        return results
+    except Exception as e:
+        print(f"[DB ERROR] Failed to read all meetings: {e}")
+        return []
+

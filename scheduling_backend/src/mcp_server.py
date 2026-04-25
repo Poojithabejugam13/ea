@@ -253,10 +253,26 @@ def get_user_schedule(user_id: str, date: str) -> list[dict]:
 @mcp.tool()
 def get_mutual_free_slots(user_ids: list[str], date: str, duration_mins: int = 60) -> list[dict]:
     """Find up to 3 mutual free time slots for all given users on a date (UTC).
+    You can pass EIDs (IDs) OR user names (e.g. 'Sita Ram'). Names will be automatically resolved.
     Always includes organiser in the check.
     """
     _set_live_status("Finding mutual free slots...")
-    all_ids = list(set(user_ids + [_get_organiser().id]))
+    resolved_ids = []
+    for uid in user_ids:
+        # Check if it's already an ID (numeric)
+        m = re.search(r"\b(\d{2,})\b", uid)
+        if m:
+            resolved_ids.append(m.group(1))
+        else:
+            # It's a name, resolve it
+            results = get_repo().search_users(uid)
+            if results:
+                resolved_ids.append(results[0].id)
+            else:
+                # Fallback, just append and hope
+                resolved_ids.append(uid)
+
+    all_ids = list(set(resolved_ids + [_get_organiser().id]))
     return get_repo().get_free_slots(all_ids, date, duration_mins)
 
 
@@ -343,6 +359,9 @@ def get_room_suggestions(start: str, end: str, participant_count: int = 2) -> li
         if cap <= 8: return "small"
         if cap <= 14: return "medium"
         return "large"
+
+    if participant_count is None:
+        participant_count = 2
 
     req_bucket = "small"
     if 3 <= participant_count <= 6: req_bucket = "medium"
@@ -448,6 +467,7 @@ def create_meeting(
     attendees: list = [],  # List of {"id": "eid_here", "type": "required|optional"}
     recurrence: str = "none",
     presenter: str = "",
+    until_date: str = "",
 ) -> dict:
     """Book a new meeting. Poojitha Reddy is always the organiser.
     
@@ -464,6 +484,7 @@ def create_meeting(
                   Search users first to get their IDs.
         recurrence: 'none' | 'daily' | 'weekly' | 'biweekly' | 'monthly'
         presenter: Name of lead (empty = organiser).
+        until_date: End date for recurrence (YYYY-MM-DD).
     """
     attendees = _resolve_attendees(attendees)
     _set_live_status("Creating meeting...")
@@ -481,13 +502,24 @@ def create_meeting(
                 userId=user.id,
             ))
 
+    # Handle "Everyone" Presenter Assignment
+    if presenter and presenter.lower() == "everyone":
+        presenter_names = [_get_organiser().displayName]
+        for ae in attendee_entries:
+            presenter_names.append(ae.emailAddress.name)
+        presenter = ", ".join(presenter_names)
+
     # Safety net: validate conflicts at booking time so meetings are never
     # created on overlapping slots even if the model skipped conflict tools.
     requested_ids = list({ae.userId for ae in attendee_entries if ae.userId})
     requested_ids.append(_get_organiser().id)
     conflict_details = []
     for uid in sorted(set(requested_ids)):
-        detail = check_conflict_detail(uid, start, end)
+        # Use buffer_mins=0: the 15-min buffer is already applied during slot
+        # suggestion by get_free_slots. Re-applying it here incorrectly rejects
+        # AI-suggested mutual-free slots that immediately follow existing meetings.
+        detail = check_conflict_detail(uid, start, end, buffer_mins=0)
+
         if detail.get("conflict"):
             user = get_repo().get_user_by_id(uid)
             conflict_details.append({
@@ -504,50 +536,105 @@ def create_meeting(
             "conflicts": conflict_details,
         }
 
-    event = Event(**{
-        "id": event_id,
-        "subject": subject,
-        "bodyPreview": agenda,
-        "start": {"dateTime": start, "timeZone": "UTC"},
-        "end": {"dateTime": end, "timeZone": "UTC"},
-        "location": location,
-        "attendees": attendee_entries,
-        "organizer": {"address": _get_organiser().mail, "name": _get_organiser().displayName},
-        "onlineMeeting": {"joinUrl": join_url},
-        "isOnlineMeeting": True,
-    })
-    get_repo().create_event(event)
+    # Resolve recurrence occurrences
+    events_to_create = []
+    current_start = _parse_iso(start)
+    current_end = _parse_iso(end)
+    
+    until_dt = None
+    if until_date:
+        try:
+            until_dt = datetime.fromisoformat(until_date.replace("Z", "+00:00"))
+            if until_dt.tzinfo is None:
+                until_dt = until_dt.replace(tzinfo=timezone.utc)
+        except:
+            pass
 
-    attendee_ids = [a["id"] for a in attendees if "id" in a]
-    fingerprint = SessionManager.make_fingerprint(attendee_ids, subject)
+    if recurrence != "none" and until_dt:
+        while current_start <= until_dt:
+            events_to_create.append((current_start.strftime("%Y-%m-%dT%H:%M:%SZ"), current_end.strftime("%Y-%m-%dT%H:%M:%SZ")))
+            
+            if recurrence == "daily":
+                current_start += timedelta(days=1)
+                current_end += timedelta(days=1)
+            elif recurrence == "weekly":
+                current_start += timedelta(days=7)
+                current_end += timedelta(days=7)
+            elif recurrence == "biweekly":
+                current_start += timedelta(days=14)
+                current_end += timedelta(days=14)
+            elif recurrence == "monthly":
+                current_start += timedelta(days=30)
+                current_end += timedelta(days=30)
+            else:
+                break
+    else:
+        events_to_create.append((start, end))
 
-    # Save to Redis for future duplicate detection
-    get_session_mgr().save_meeting(fingerprint, {
-        "event_id": event_id,
-        "subject": subject,
-        "agenda": agenda,
-        "start": start,
-        "end": end,
-        "location": location,
-        "join_url": join_url,
-        "recurrence": recurrence,
-        "presenter": presenter or _get_organiser().displayName,
-        "organizer": _get_organiser().displayName,
-        "attendees": [a.emailAddress.name for a in attendee_entries],
-        "attendee_ids": [a.get("id") for a in attendees if a.get("id")],
-        "fingerprint": fingerprint,
-    })
+    first_result = None
+    for idx, (s_str, e_str) in enumerate(events_to_create):
+        ev_id = str(uuid.uuid4()) if idx > 0 else event_id
+        
+        event = Event(**{
+            "id": ev_id,
+            "subject": subject,
+            "bodyPreview": agenda,
+            "start": {"dateTime": s_str, "timeZone": "UTC"},
+            "end": {"dateTime": e_str, "timeZone": "UTC"},
+            "location": location,
+            "attendees": attendee_entries,
+            "organizer": {"address": _get_organiser().mail, "name": _get_organiser().displayName},
+            "onlineMeeting": {"joinUrl": join_url},
+            "isOnlineMeeting": True,
+        })
+        get_repo().create_event(event)
 
-    # ── Persist to PostgreSQL (meetings table) ──────────────────────
-    insert_meeting(
-        meeting_id=event_id,
-        organiser_name=_get_organiser().displayName,
-        start_date=start,
-        end_date=end,
-        meeting_title=subject,
-        meeting_agenda=agenda,
-        participants=[a.emailAddress.name for a in attendee_entries],
-    )
+        # ── Persist to PostgreSQL (meetings table) ──────────────────────
+        insert_meeting(
+            meeting_id=ev_id,
+            organiser_name=_get_organiser().displayName,
+            start_date=s_str,
+            end_date=e_str,
+            meeting_title=subject,
+            meeting_agenda=agenda,
+            participants=[a.emailAddress.name for a in attendee_entries],
+        )
+
+        if idx == 0:
+            attendee_ids = [a["id"] for a in attendees if "id" in a]
+            fingerprint = SessionManager.make_fingerprint(attendee_ids, subject)
+
+            # Save to Redis for future duplicate detection
+            get_session_mgr().save_meeting(fingerprint, {
+                "event_id": event_id,
+                "subject": subject,
+                "agenda": agenda,
+                "start": start,
+                "end": end,
+                "location": location,
+                "join_url": join_url,
+                "recurrence": recurrence,
+                "presenter": presenter or _get_organiser().displayName,
+                "organizer": _get_organiser().displayName,
+                "attendees": [a.emailAddress.name for a in attendee_entries],
+                "attendee_ids": [a.get("id") for a in attendees if a.get("id")],
+                "fingerprint": fingerprint,
+            })
+
+            first_result = {
+                "status": "booked",
+                "event_id": event_id,
+                "fingerprint": fingerprint,
+                "subject": subject,
+                "start": start,
+                "end": end,
+                "location": location,
+                "recurrence": recurrence,
+                "presenter": presenter or _get_organiser().displayName,
+                "join_url": join_url,
+                "organizer": _get_organiser().displayName,
+                "attendees": [{"name": a.emailAddress.name, "email": a.emailAddress.address, "id": a.userId} for a in attendee_entries],
+            }
 
     for ae in attendee_entries:
         if ae.userId:
@@ -565,20 +652,7 @@ def create_meeting(
                 ),
             )
 
-    return {
-        "status": "booked",
-        "event_id": event_id,
-        "fingerprint": fingerprint,
-        "subject": subject,
-        "start": start,
-        "end": end,
-        "location": location,
-        "recurrence": recurrence,
-        "presenter": presenter or _get_organiser().displayName,
-        "join_url": join_url,
-        "organizer": _get_organiser().displayName,
-        "attendees": [{"name": a.emailAddress.name, "email": a.emailAddress.address, "id": a.userId} for a in attendee_entries],
-    }
+    return first_result
 
 
 # ---------------------------------------------------------------------------

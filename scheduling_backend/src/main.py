@@ -90,6 +90,16 @@ async def process_agent_request(payload: dict = Body(...)):
     t0 = time.perf_counter()
     
     token = CALLER_USER_ID.set(user_id)
+    if truncate_history is not None:
+        if truncate_history == 0:
+            get_session_mgr().set_session(session_id, {})
+        else:
+            session_data = get_session_mgr().get_session(session_id) or {}
+            session_data.pop("draft_meeting", None)
+            session_data.pop("last_meeting", None)
+            session_data.pop("pending_update", None)
+            get_session_mgr().set_session(session_id, session_data)
+
     try:
         agent = get_ai_agent()
         result = await agent.process_prompt(prompt, session_id=session_id, truncate_history=truncate_history)
@@ -123,6 +133,17 @@ async def get_agent_debug():
     return {
         "use_ai": agent.use_ai,
         "init_error": getattr(agent, "init_error", "None")
+    }
+
+@app.get("/debug/paths")
+async def get_debug_paths():
+    import sys
+    import os
+    import src.services
+    return {
+        "sys_path": sys.path,
+        "services_file": src.services.__file__,
+        "cwd": os.getcwd()
     }
 
 @app.post("/agent/check_conflicts")
@@ -231,4 +252,4 @@ def read_root():
 if __name__ == "__main__":
     import uvicorn
     # Important: use the module path "src.main" if running from the root
-    uvicorn.run("src.main:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run("src.main:app", host="127.0.0.1", port=8000, reload=True)
